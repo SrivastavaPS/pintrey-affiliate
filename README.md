@@ -1,91 +1,116 @@
-# Pinterest Affiliate Marketing Automation App
+# Pintrey Affiliate
 
-This application automates the process of creating and managing Pinterest affiliate marketing campaigns. It helps users find trending Amazon products, generate affiliate links, create optimized pins, schedule posts, and track performance.
+Automated Pinterest affiliate marketing pipeline for Amazon India.
 
-## Features
+A single click runs the full chain: AI picks a trending niche, picks a product
+from your curated library, generates a Pinterest-ready image and copy, and
+posts the pin to your Pinterest board with your affiliate link attached.
 
-- **Product Research**: Search and browse Amazon products with real API integration
-- **Affiliate Link Generation**: Convert URLs to affiliate links with automatic tagging
-- **Pin Creation**: Design custom Pinterest pins with canvas-based image generation
-- **Link Management**: Organize and track all affiliate links with click monitoring
-- **Posting Scheduler**: Schedule pins and manage posting workflow
-- **Analytics Dashboard**: Track performance and optimize campaigns
-- **Mobile Responsive**: Works on desktop and mobile devices
+## What It Does
 
-## Getting Started
-
-1. Clone the repository
-2. Install dependencies: `npm install`
-3. Set up environment variables (see .env.local)
-4. Run the development server: `npm run dev`
-
-## Environment Variables
-
-Create a `.env.local` file in the root directory:
-
-```env
-# Amazon Product Advertising API (Required for real product data)
-AMAZON_ACCESS_KEY=your_amazon_access_key_here
-AMAZON_SECRET_KEY=your_amazon_secret_key_here
-AMAZON_ASSOCIATE_TAG=your_associate_tag_here
-AMAZON_REGION=us-east-1
-
-# Optional: URL Shortener (e.g., Bitly)
-BITLY_ACCESS_TOKEN=your_bitly_token_here
+```
+[ Run POC button ]
+        ↓
+[ Groq LLM picks niche of the day ]
+        ↓
+[ Library matches niche → real product picked ]
+        ↓
+[ Groq writes title + description + hashtags ]
+        ↓
+[ Pin uses real product image (or AI-generated fallback) ]
+        ↓
+[ Pinterest API posts to your selected board ]
+        ↓
+[ Every step logged to Supabase for tracking ]
 ```
 
-### Getting Amazon API Credentials
+## Stack
 
-1. Sign up for Amazon Associates: https://affiliate-program.amazon.com/
-2. Apply for Product Advertising API access
-3. Get your Access Key and Secret Key from AWS IAM
-4. Use your Associate Tag from Amazon Associates
+- **Frontend / API**: Next.js 16 (App Router) + TypeScript + Tailwind CSS
+- **Database**: Supabase (PostgreSQL)
+- **AI (niches + copy)**: Groq (Llama 3.3 70B) — free tier
+- **Image generation**: Pollinations.ai (free) or product image directly
+- **Affiliate**: Amazon Associates India (tag `prakshita-21`)
+- **Posting**: Pinterest API v5
 
-## Usage
+## Folder Structure
 
-1. **Dashboard**: Overview of all features
-2. **Product Research**: Search for trending products
-3. **Pin Creator**: Design pins with product images and affiliate links
-4. **Link Manager**: Generate and organize affiliate links
-5. **Posting Scheduler**: Plan and track your Pinterest posting schedule
-6. **Analytics Dashboard**: Monitor performance, earnings, and optimize strategies
+```
+app/
+├── page.tsx                    Home dashboard
+├── poc/page.tsx                Run-the-pipeline UI with live event feed
+├── products/add/page.tsx       Product library manager (paste Amazon URLs)
+├── pinterest/setup/page.tsx    Pinterest token check + board picker
+├── privacy/page.tsx            Privacy policy
+├── terms/page.tsx              Terms of service
+└── api/
+    ├── poc/                    Pipeline orchestrator + sub-steps
+    │   ├── run/                Calls all sub-steps in sequence
+    │   ├── discover-niche/     Groq picks a niche
+    │   ├── find-products/      Library → PA-API → mock fallback
+    │   ├── generate-content/   Groq writes copy + image URL
+    │   └── post-pin/           Pinterest API call
+    ├── library/                CRUD for product_library
+    └── pinterest/              Account + boards lookup
 
-## Pinterest Integration
+lib/
+├── supabase.ts                 DB client + types
+├── groq.ts                     AI client (JSON mode)
+├── logger.ts                   Event logging helpers
+├── amazon-url.ts               ASIN extraction + metadata fetch
+└── pinterest.ts                Pinterest API wrapper
 
-Since Pinterest's API has limited posting capabilities:
-- Use manual posting with the generated pins
-- Integrate with third-party tools like Tailwind or Zapier
-- Follow Pinterest's affiliate disclosure guidelines
+db/
+├── schema.sql                  Phase 1 tables (run once in Supabase)
+└── schema-additions.sql        Phase 1.5 product_library table
+```
 
-## Technologies
+## Setup
 
-- **Frontend**: Next.js 16, React, TypeScript, Tailwind CSS
-- **Backend**: Next.js API Routes
-- **APIs**: Amazon Product Advertising API
-- **Storage**: Browser LocalStorage (for demo; use database for production)
-- **Image Generation**: HTML5 Canvas
+### 1. Database
+Create a Supabase project, then run the SQL files in order in the SQL Editor:
 
-## Development
+```
+db/schema.sql            (creates pipeline_runs, niches, products, pins, pinterest_posts, events)
+db/schema-additions.sql  (creates product_library + alters products.source check)
+```
 
-- `npm run dev` - Start development server
-- `npm run build` - Build for production
-- `npm run start` - Start production server
+### 2. Environment Variables
+Fill in `.env.local`:
 
-## Deployment
+| Var | Where to get it |
+| --- | --- |
+| `NEXT_PUBLIC_SUPABASE_URL` | Supabase → Settings → API |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase → Settings → API |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase → Settings → API (keep secret) |
+| `GROQ_API_KEY` | https://console.groq.com/keys |
+| `AMAZON_ASSOCIATE_TAG` | Your Amazon Associates store tag |
+| `PINTEREST_ACCESS_TOKEN` | https://developers.pinterest.com/apps/ |
+| `PINTEREST_DEFAULT_BOARD_ID` | Use `/pinterest/setup` to look up |
 
-Deploy to Vercel, Netlify, or any Node.js hosting platform.
+Amazon PA-API keys are optional — the pipeline falls back to the curated
+library and mock data when they are not set.
 
-## Contributing
+### 3. Run
+```
+npm install
+npm run dev
+```
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Submit a pull request
+Open http://localhost:3000 → add products at `/products/add` →
+click **Run POC** at `/poc`.
+
+## Phase Roadmap
+
+| Phase | Status | What |
+| --- | --- | --- |
+| 1.0 — End-to-end POC | done | Pipeline plumbing, mock data, dry-run Pinterest |
+| 1.5 — Product library | done | Manual product curation via paste-URL |
+| 2.0 — Daily cron + scaling | pending | Auto-run N times per day, scale to 50 pins/day |
+| 3.0 — Click + sale tracking | pending | Real attribution, performance analytics |
+| 4.0 — A/B test + AI feedback loop | pending | AI learns winners, doubles down |
+| 5.0 — Multi-affiliate | pending | Add Flipkart, Myntra, AJIO alongside Amazon |
 
 ## License
 
-MIT License - see LICENSE file for details.
-
-## Disclaimer
-
-This tool is for educational and personal use. Always comply with Amazon Associates and Pinterest terms of service. Affiliate marketing success depends on content quality, audience engagement, and platform algorithms.
+Personal-use software. Not for redistribution.
