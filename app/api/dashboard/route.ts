@@ -62,37 +62,16 @@ export async function GET() {
     return NextResponse.json({ error: nicheErr.message }, { status: 500 });
   }
 
-  // PLAIN: 2. Get all active products with their pins joined.
-  // TECH:  Supabase relational query: products → pins → pinterest_posts.
-  //        Pins is one-to-many on product, so we get an array; we'll pick
-  //        the latest one in JS.
-  const { data: products, error: prodErr } = await supabase
+  // PLAIN: 2. Get all active products from the library.
+  //        Pin info is left NULL for now — pin generation directly off
+  //        library products is wired up in Phase 2.2.
+  // TECH:  Plain SELECT, no joins. Earlier attempt to join pins via
+  //        Supabase relational shorthand failed because pins.product_id
+  //        references the per-run `products` table, not `product_library`.
+  const { data: productList, error: prodErr } = await supabase
     .from('product_library')
     .select(
-      `
-      id,
-      asin,
-      title,
-      image_url,
-      price,
-      affiliate_url,
-      niche_tags,
-      source,
-      niche_id,
-      created_at,
-      pins:pins!product_id (
-        id,
-        title,
-        image_url,
-        description,
-        hashtags,
-        generated_at,
-        pinterest_posts (
-          status,
-          pin_url
-        )
-      )
-      `
+      'id, asin, title, image_url, price, affiliate_url, niche_tags, source, niche_id, created_at'
     )
     .eq('is_active', true)
     .order('created_at', { ascending: false });
@@ -101,25 +80,10 @@ export async function GET() {
     return NextResponse.json({ error: prodErr.message }, { status: 500 });
   }
 
-  // PLAIN: Wait — pins.product_id doesn't exist as an FK that Supabase auto-
-  //        detects since the original schema uses a manual FK. Let me fall
-  //        back to a separate fetch + manual join.
-  // TECH:  If the relational query returns null pins for everything, do a
-  //        second query and merge.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const productList = (products ?? []) as any[];
-  const productIds = productList.map((p) => p.id);
-
-  // PLAIN: Fetch pins for these products in one query, plus their latest post.
-  // TECH:  Two queries + JS merge is more reliable than complex relational
-  //        SELECTs that depend on Supabase's FK auto-detection.
-  // Note: pins links via product_id; pins are linked to product_library indirectly
-  // through the products table. We need to check if product_library matches
-  // the FK.
-  // Actually pins.product_id references the `products` table (per-run picks),
-  // NOT product_library. So a library product → pins is NOT direct.
-  // For now, return empty pins until pin generation is wired to library.
-  const productsWithPins: DashboardProduct[] = productList.map((p) => ({
+  // PLAIN: Decorate each product with a null latest_pin slot. Phase 2.2
+  //        will populate this once pins are linked to library products.
+  // TECH:  Direct map; carry niche_id forward for the grouping step below.
+  const productsTyped = (productList ?? []).map((p) => ({
     id: p.id,
     asin: p.asin,
     title: p.title,
@@ -129,16 +93,9 @@ export async function GET() {
     niche_tags: p.niche_tags,
     source: p.source,
     created_at: p.created_at,
-    // PLAIN: Pin generation directly off library products is a Phase 2.2 task.
-    //        For now, dashboard shows products without pins.
-    latest_pin: null,
-    // Carry niche_id through for grouping below.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     niche_id: p.niche_id,
-  })) as DashboardProduct[];
-  // Hack: re-attach niche_id without TypeScript fight.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const productsTyped = productsWithPins as any[];
+    latest_pin: null,
+  }));
 
   // PLAIN: 3. Group products by niche_id.
   // TECH:  Build a Map<niche_id, products[]>; null niche_id → "uncategorised".
@@ -173,9 +130,6 @@ export async function GET() {
       products: uncategorised,
     });
   }
-
-  // PLAIN: Avoid unused-var warning for productIds (keep for future).
-  void productIds;
 
   return NextResponse.json({ niches: tree });
 }
