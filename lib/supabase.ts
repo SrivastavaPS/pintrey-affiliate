@@ -14,28 +14,33 @@
 // TECH:  Named import of the client factory from @supabase/supabase-js.
 import { createClient } from '@supabase/supabase-js';
 
-// PLAIN: Read the secret keys from .env.local.
-// TECH:  process.env access; throws helpful error if missing in dev.
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+// PLAIN: Read the secret keys from .env.local. We default to empty strings
+//        so this file doesn't blow up at build/import time — runtime calls
+//        will fail loudly if vars are missing (which is the right place to
+//        surface the error, after the build succeeds).
+// TECH:  Build-safe: Vercel "collect page data" imports server modules
+//        without runtime env access. Throwing here would break the build.
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? '';
+const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? '';
 
-// PLAIN: If keys are missing, fail loudly so we know to fix .env.local.
-// TECH:  Early validation; better than silent runtime errors deep in code.
+// PLAIN: Warn (don't throw) at startup if vars are obviously missing —
+//        helps spot missing config in dev without blocking builds.
+// TECH:  console.warn fires once on first import; non-fatal.
 if (!supabaseUrl || !supabaseServiceRoleKey) {
-  throw new Error(
-    '[supabase] Missing env vars. Set NEXT_PUBLIC_SUPABASE_URL and ' +
-    'SUPABASE_SERVICE_ROLE_KEY in .env.local'
+  console.warn(
+    '[supabase] NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY ' +
+    'missing. Database calls will fail until these are set.'
   );
 }
 
-// PLAIN: Create the database connection. We use it everywhere via:
+// PLAIN: Create the database connection. Use it everywhere via:
 //          import { supabase } from '@/lib/supabase'
-// TECH:  Singleton instance with service_role auth. `auth.persistSession`
-//        is false because this is a server-side, stateless connection.
+// TECH:  Singleton client. createClient does not validate keys at
+//        construction; bad creds fail at first API call, not at import.
 export const supabase = createClient(supabaseUrl, supabaseServiceRoleKey, {
   auth: {
-    // PLAIN: We don't need to remember login state; each request is fresh.
-    // TECH:  Disable cookie/session persistence on server-side client.
+    // PLAIN: Server-side stateless — no session memory needed.
+    // TECH:  Disable cookie/session persistence; each request is fresh.
     persistSession: false,
     autoRefreshToken: false,
   },
