@@ -17,6 +17,62 @@ import {
   buildAffiliateUrl,
   canonicalUrlFromAsin,
 } from '@/lib/amazon-url';
+import { generateJson, SchemaType } from '@/lib/groq';
+
+// PLAIN: Schema we make Groq follow when suggesting niche tags.
+// TECH:  Single field response — array of tag strings.
+const TAG_SUGGESTION_SCHEMA = {
+  type: SchemaType.OBJECT,
+  properties: {
+    tags: {
+      type: SchemaType.ARRAY,
+      items: { type: SchemaType.STRING },
+      description:
+        '5-8 lowercase niche keywords separated by commas, e.g., ' +
+        '["skincare", "korean", "toner", "anti-acne", "glow"]',
+    },
+  },
+  required: ['tags'],
+} as const;
+
+interface TagResponse {
+  tags: string[];
+}
+
+/**
+ * PLAIN: Asks the AI to suggest niche tags for a product based on its title.
+ *        Used for the "auto-fill tags" UX in /products/add.
+ *
+ * TECH:  Single Groq call with a strict response schema. Returns empty
+ *        array on failure so caller can fall back to manual entry.
+ */
+async function suggestNicheTags(title: string): Promise<string[]> {
+  try {
+    const prompt = `
+You're helping categorise an Amazon product for a Pinterest affiliate library.
+
+PRODUCT TITLE: ${title}
+
+Generate 5-8 lowercase, single-word or two-word niche tags that describe what
+kind of audience would search for this on Pinterest. Think Pinterest search
+keywords, not product features.
+
+Good examples:
+- "Korean skincare toner" → ["skincare", "korean", "toner", "k-beauty", "anti-acne"]
+- "Wooden plant stand 3 tier" → ["plant stand", "indoor plants", "home decor", "boho"]
+- "Air fryer 4.5L" → ["kitchen gadgets", "air fryer", "healthy cooking", "meal prep"]
+
+Return JSON: { tags: [...] }
+    `.trim();
+
+    const result = await generateJson<TagResponse>(prompt, TAG_SUGGESTION_SCHEMA);
+    return Array.isArray(result.tags) ? result.tags : [];
+  } catch {
+    // PLAIN: AI suggestion is best-effort. Don't block the form.
+    // TECH:  Silent catch; user can type tags manually.
+    return [];
+  }
+}
 
 // =============================================================================
 // GET /api/library  — list all products
@@ -101,14 +157,26 @@ export async function POST(req: NextRequest) {
     const productUrl = canonicalUrlFromAsin(asin, marketplace);
     const affiliateUrl = buildAffiliateUrl(productUrl, associateTag);
 
-    // PLAIN: Step 4 — fetch the page meta tags for title & image.
-    // TECH:  Parallel-friendly but only one fetch needed; awaited inline.
+    // PLAIN: Step 4 — fetch the page meta tags for title, image, and price.
+    // TECH:  Single fetch returns all three via fetchProductMetadata.
     const meta = await fetchProductMetadata(productUrl);
 
+    // PLAIN: Step 5 — for PREVIEW mode, ask AI to suggest niche tags from
+    //        the title. Skipped on SAVE if user already typed tags.
+    // TECH:  Only run AI on preview to save tokens; users can override.
+    let suggestedTags: string[] = [];
+    if (mode === 'preview' && (meta.title || asin)) {
+      suggestedTags = await suggestNicheTags(meta.title ?? asin);
+    }
+
     // PLAIN: Use override values from the form if the user typed them.
-    // TECH:  Body overrides > scraped meta > sensible defaults.
+    // TECH:  Body overrides > scraped meta > AI suggestion > defaults.
     const finalTitle = body.title ?? meta.title ?? `Amazon product ${asin}`;
     const finalImage = body.image_url ?? meta.image ?? null;
+    const finalPrice = body.price ?? meta.price ?? null;
+    const finalTags =
+      body.niche_tags ??
+      (suggestedTags.length > 0 ? suggestedTags.join(', ') : null);
 
     // PLAIN: Build the data object that represents this product.
     // TECH:  Shared across preview and save responses.
@@ -118,8 +186,8 @@ export async function POST(req: NextRequest) {
       image_url: finalImage,
       product_url: productUrl,
       affiliate_url: affiliateUrl,
-      price: body.price ?? null,
-      niche_tags: body.niche_tags ?? null,
+      price: finalPrice,
+      niche_tags: finalTags,
       notes: body.notes ?? null,
       is_active: true,
       source: 'manual' as const,

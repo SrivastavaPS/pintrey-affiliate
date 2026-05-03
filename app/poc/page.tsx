@@ -63,7 +63,12 @@ interface PocResult {
     status: string;
     error_message: string | null;
   };
+  /** PLAIN: True when post-pin step ran in dry-run mode (no Pinterest creds). */
   dryRun?: boolean;
+  /** PLAIN: True when pin was queued for manual posting (PINTEREST_MODE=manual). */
+  queued?: boolean;
+  /** PLAIN: 'manual' or 'auto' — which posting mode was used. */
+  mode?: string;
   error?: string;
 }
 
@@ -299,7 +304,23 @@ export default function PocPage() {
                     <h3 className="text-sm font-semibold uppercase tracking-wide text-gray-500">
                       Pinterest Post
                     </h3>
-                    {result.dryRun ? (
+                    {result.queued ? (
+                      <div className="rounded-lg bg-blue-50 p-3">
+                        <p className="text-sm font-semibold text-blue-800">
+                          ✓ Queued for manual posting
+                        </p>
+                        <p className="mt-1 text-xs text-blue-700">
+                          Pin is waiting in your queue. Open it, click
+                          &quot;Open Pinterest&quot;, paste, and save.
+                        </p>
+                        <a
+                          href="/queue"
+                          className="mt-2 inline-block rounded bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700"
+                        >
+                          Go to queue →
+                        </a>
+                      </div>
+                    ) : result.dryRun ? (
                       <p className="text-sm text-yellow-700">
                         Dry run — Pinterest creds not set yet. Pin saved as
                         pending.

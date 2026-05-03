@@ -29,7 +29,8 @@ interface LibraryProduct {
 }
 
 // PLAIN: Shape of the preview returned by POST /api/library (mode=preview).
-// TECH:  Same fields as LibraryProduct minus DB-only ones.
+// TECH:  Same fields as LibraryProduct minus DB-only ones. Includes AI-
+//        suggested niche_tags and scraped price.
 interface ProductPreview {
   asin: string;
   title: string;
@@ -110,10 +111,14 @@ export default function AddProductPage() {
       if (!res.ok) {
         setError(data.error ?? 'Could not preview product.');
       } else {
+        // PLAIN: Pre-fill the form with everything the server extracted —
+        //        title from og:title, price from page HTML, and AI-suggested
+        //        niche tags. User can edit anything before saving.
+        // TECH:  Defaults from preview; nullable values fall back to ''.
         setPreview(data.preview);
         setEditTitle(data.preview.title ?? '');
-        setEditPrice('');
-        setEditTags('');
+        setEditPrice(data.preview.price ?? '');
+        setEditTags(data.preview.niche_tags ?? '');
         setEditNotes('');
       }
     } catch (err) {
@@ -271,7 +276,11 @@ export default function AddProductPage() {
 
                 <label className="block">
                   <span className="text-xs font-semibold uppercase text-gray-500">
-                    Price (e.g., ₹1,099)
+                    Price {preview.price && (
+                      <span className="ml-2 rounded bg-green-100 px-2 py-0.5 text-[10px] font-bold text-green-700">
+                        AUTO-DETECTED
+                      </span>
+                    )}
                   </span>
                   <input
                     value={editPrice}
@@ -283,7 +292,11 @@ export default function AddProductPage() {
 
                 <label className="block">
                   <span className="text-xs font-semibold uppercase text-gray-500">
-                    Niche tags (comma-separated)
+                    Niche tags (comma-separated) {preview.niche_tags && (
+                      <span className="ml-2 rounded bg-purple-100 px-2 py-0.5 text-[10px] font-bold text-purple-700">
+                        AI-SUGGESTED
+                      </span>
+                    )}
                   </span>
                   <input
                     value={editTags}
@@ -292,8 +305,9 @@ export default function AddProductPage() {
                     className="mt-1 block w-full rounded border border-gray-300 px-3 py-2 text-sm"
                   />
                   <span className="text-xs text-gray-400">
-                    AI matches niches to these tags. More tags = more chances
-                    your product gets picked.
+                    AI matches niches to these tags. Edit if you want
+                    different keywords. More tags = more chances your
+                    product gets picked.
                   </span>
                 </label>
 

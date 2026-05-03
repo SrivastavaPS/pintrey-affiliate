@@ -68,12 +68,14 @@ export async function resolveShortUrl(url: string): Promise<string> {
 }
 
 /**
- * PLAIN: The metadata we extract from an Amazon page (title, image).
+ * PLAIN: The metadata we extract from an Amazon page (title, image, price).
  * TECH:  Strongly-typed return for callers.
  */
 export interface ProductMetadata {
   title: string | null;
   image: string | null;
+  /** PLAIN: Display price string (e.g., "₹1,099"), or null if not detected. */
+  price: string | null;
   /** PLAIN: True if we successfully fetched the page at all. */
   ok: boolean;
 }
@@ -106,7 +108,7 @@ export async function fetchProductMetadata(
     });
 
     if (!response.ok) {
-      return { title: null, image: null, ok: false };
+      return { title: null, image: null, price: null, ok: false };
     }
 
     const html = await response.text();
@@ -123,11 +125,49 @@ export async function fetchProductMetadata(
     return {
       title: titleMatch ? decodeHtml(titleMatch[1]) : null,
       image: imageMatch ? decodeHtml(imageMatch[1]) : null,
+      price: extractPrice(html),
       ok: true,
     };
   } catch {
-    return { title: null, image: null, ok: false };
+    return { title: null, image: null, price: null, ok: false };
   }
+}
+
+/**
+ * PLAIN: Searches the Amazon HTML for the product price. Tries several
+ *        common patterns since Amazon changes its markup constantly.
+ *        Returns null if no price is found.
+ *
+ * TECH:  Regex sweep over known Amazon price selectors. The first match
+ *        wins. Decodes HTML entities so currency symbols (e.g., &#8377; → ₹)
+ *        come through correctly.
+ */
+function extractPrice(html: string): string | null {
+  // PLAIN: Patterns to try, in priority order (most reliable first).
+  // TECH:  All return capture group 1 = price text. ₹/$/£ symbols handled
+  //        either as literal Unicode or HTML entities.
+  const patterns: RegExp[] = [
+    // Modern Amazon: <span class="a-offscreen">₹1,099</span> (used by screen readers; reliable)
+    /<span[^>]*class="a-offscreen"[^>]*>([^<]+)<\/span>/i,
+    // Older Amazon: <span id="priceblock_ourprice">₹1,099</span>
+    /<span[^>]*id="priceblock_ourprice"[^>]*>([^<]+)<\/span>/i,
+    /<span[^>]*id="priceblock_dealprice"[^>]*>([^<]+)<\/span>/i,
+    /<span[^>]*id="priceblock_saleprice"[^>]*>([^<]+)<\/span>/i,
+    // Twister / variation pages: data-a-color="price" wrapper
+    /data-a-color="price"[^>]*>[^<]*<span[^>]*class="a-offscreen"[^>]*>([^<]+)<\/span>/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = html.match(pattern);
+    if (match) {
+      const raw = decodeHtml(match[1]).trim();
+      // PLAIN: Sanity check — price text should contain a digit.
+      // TECH:  Filters out empty matches and label-like strings.
+      if (/\d/.test(raw)) return raw;
+    }
+  }
+
+  return null;
 }
 
 /**

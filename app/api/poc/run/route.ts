@@ -119,6 +119,12 @@ export async function POST(req: NextRequest) {
     const post = (step4 as any).post;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const dryRun = (step4 as any).dryRun ?? false;
+    // PLAIN: Whether the pin was queued for manual posting (vs auto-posted).
+    // TECH:  post-pin returns { queued: true, mode: 'manual' } in manual mode.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const queued = (step4 as any).queued ?? false;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const mode = (step4 as any).mode ?? 'auto';
     await bumpStepCount(runId, 4);
 
     // PLAIN: All 4 steps succeeded. Mark the run as success.
@@ -142,6 +148,8 @@ export async function POST(req: NextRequest) {
       pin,
       post,
       dryRun,
+      queued,
+      mode,
     });
   } catch (err) {
     // PLAIN: Something broke mid-pipeline. Mark the run as failed.

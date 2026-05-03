@@ -114,3 +114,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_library_unique_asin
 ALTER TABLE products DROP CONSTRAINT IF EXISTS products_source_check;
 ALTER TABLE products ADD CONSTRAINT products_source_check
   CHECK (source IN ('amazon_paapi', 'mock', 'library'));
+
+
+-- -----------------------------------------------------------------------------
+-- ALTER pinterest_posts.status — add 'queued' for manual posting workflow
+-- -----------------------------------------------------------------------------
+-- PLAIN: Pinterest API access is unreliable for affiliate apps. Manual mode
+--        queues a pin (status='queued') for the operator to copy/paste into
+--        Pinterest's web interface in <30 seconds.
+-- TECH:  Drop and re-add CHECK constraint to include 'queued'.
+-- -----------------------------------------------------------------------------
+ALTER TABLE pinterest_posts DROP CONSTRAINT IF EXISTS pinterest_posts_status_check;
+ALTER TABLE pinterest_posts ADD CONSTRAINT pinterest_posts_status_check
+  CHECK (status IN ('pending', 'queued', 'posted', 'failed'));

@@ -58,15 +58,57 @@ export async function POST(req: NextRequest) {
       throw new Error(`pin not found: ${pinErr?.message ?? 'no rows'}`);
     }
 
-    // PLAIN: Pull Pinterest credentials from .env.local.
-    // TECH:  Both the access token and target board ID are required to post.
+    // PLAIN: Decide how to handle this pin — manual queue or auto-post.
+    //        Three modes:
+    //          1. MANUAL  → save as 'queued' so the operator can post via
+    //                       /queue page (no Pinterest API needed).
+    //          2. AUTO    → call Pinterest API to post live (needs token).
+    //          3. DRY RUN → no token configured → save as 'pending' (dev only).
+    //
+    // TECH:  PINTEREST_MODE env var ('manual' default) drives the branch.
+    //        Auto mode falls back to dry-run if creds are missing/invalid.
     const accessToken = process.env.PINTEREST_ACCESS_TOKEN;
     const boardId = process.env.PINTEREST_DEFAULT_BOARD_ID;
+    const mode = (process.env.PINTEREST_MODE ?? 'manual').toLowerCase();
 
-    // PLAIN: If Pinterest isn't set up yet, do a "dry run" — save a
-    //        pending record but don't actually call Pinterest. Lets us
-    //        test the full pipeline before Pinterest creds are ready.
-    // TECH:  Token guard + dry-run fallback writes to pinterest_posts table.
+    // -------------------------------------------------------------------
+    // MODE 1: MANUAL — queue the pin for the operator to post manually.
+    // -------------------------------------------------------------------
+    // PLAIN: Saves the pin to the queue. Operator goes to /queue, sees it,
+    //        copies the title/description/link, opens Pinterest, posts in
+    //        ~30 seconds. Most reliable mode — Pinterest API access is
+    //        unreliable for affiliate apps.
+    // TECH:  Insert with status='queued'. Operator marks 'posted' later
+    //        from the /queue page (PATCH /api/queue/<id>).
+    if (mode === 'manual') {
+      const { data: queued, error: queueErr } = await supabase
+        .from('pinterest_posts')
+        .insert({
+          pin_id: pinId,
+          status: 'queued',
+        })
+        .select()
+        .single();
+
+      if (queueErr) throw new Error(`queue insert failed: ${queueErr.message}`);
+
+      await logEvent({
+        runId,
+        step: 'post_pin',
+        status: 'success',
+        message: 'Pin queued for manual posting. Visit /queue to post.',
+        payload: { post: queued, mode: 'manual' },
+      });
+
+      return NextResponse.json({ post: queued, mode: 'manual', queued: true });
+    }
+
+    // -------------------------------------------------------------------
+    // MODE 3 (fallback): DRY RUN — auto mode but no creds configured.
+    // -------------------------------------------------------------------
+    // PLAIN: If you set PINTEREST_MODE=auto but haven't added a token yet,
+    //        we still save a placeholder so the rest of the pipeline works.
+    // TECH:  Same dry-run behavior as before.
     const isDryRun =
       !accessToken ||
       !boardId ||
@@ -90,12 +132,15 @@ export async function POST(req: NextRequest) {
         runId,
         step: 'post_pin',
         status: 'success',
-        message: 'DRY RUN — Pinterest creds not set; pin saved as pending.',
+        message: 'DRY RUN — auto mode set but Pinterest creds missing.',
         payload: { post: dryPost, dry_run: true },
       });
 
       return NextResponse.json({ post: dryPost, dryRun: true });
     }
+    // -------------------------------------------------------------------
+    // MODE 2: AUTO — falls through to the real Pinterest API call below.
+    // -------------------------------------------------------------------
 
     // PLAIN: Build the request body Pinterest expects.
     // TECH:  Per https://developers.pinterest.com/docs/api/v5/#operation/pins/create

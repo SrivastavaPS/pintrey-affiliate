@@ -59,7 +59,7 @@ export const supabase = createClient(supabaseUrl, supabaseServiceRoleKey, {
 export type PipelineRunStatus = 'running' | 'success' | 'failed';
 export type EventStatus = 'info' | 'success' | 'failed';
 export type ProductSource = 'amazon_paapi' | 'mock' | 'library';
-export type PinterestPostStatus = 'pending' | 'posted' | 'failed';
+export type PinterestPostStatus = 'pending' | 'queued' | 'posted' | 'failed';
 
 export interface PipelineRun {
   id: string;
