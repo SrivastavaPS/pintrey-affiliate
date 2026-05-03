@@ -51,13 +51,17 @@ export const SchemaType = {
 
 export type SchemaTypeValue = (typeof SchemaType)[keyof typeof SchemaType];
 
+// PLAIN: Schema definition accepts both mutable and readonly arrays so that
+//        callers can use `as const` for compile-time literal types without
+//        triggering "readonly cannot be assigned to mutable" errors.
+// TECH:  readonly modifiers on array fields. Compatible with `as const` schemas.
 export type GeminiSchema = {
   type: SchemaTypeValue;
   properties?: Record<string, GeminiSchema>;
   items?: GeminiSchema;
-  required?: string[];
+  required?: readonly string[];
   description?: string;
-  enum?: string[];
+  enum?: readonly string[];
 };
 
 /**

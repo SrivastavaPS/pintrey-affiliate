@@ -262,84 +262,20 @@ function toProductInput(row: {
   };
 }
 
-// PLAIN: Tries to call the real Amazon Product Advertising API.
-//        Returns null if credentials are missing or the call fails.
-// TECH:  Lazy require of amazon-paapi to avoid module-init cost when unused.
-//        Catches all errors and returns null so caller can fall back to mock.
-async function tryAmazonApi(keyword: string): Promise<ProductInput | null> {
-  const accessKey = process.env.AMAZON_ACCESS_KEY;
-  const secretKey = process.env.AMAZON_SECRET_KEY;
-  const partnerTag = process.env.AMAZON_ASSOCIATE_TAG;
-  const host = process.env.AMAZON_HOST ?? 'webservices.amazon.in';
-  const region = process.env.AMAZON_REGION ?? 'eu-west-1';
-  const marketplace = process.env.AMAZON_MARKETPLACE ?? 'www.amazon.in';
-
-  // PLAIN: Skip if Amazon keys are placeholders or missing.
-  // TECH:  Guard against the default .env.local stub values.
-  if (
-    !accessKey ||
-    !secretKey ||
-    !partnerTag ||
-    accessKey.startsWith('your_') ||
-    secretKey.startsWith('your_')
-  ) {
-    return null;
-  }
-
-  try {
-    // PLAIN: Load the Amazon library and call the search endpoint.
-    // TECH:  Dynamic import so build doesn't fail if package is uninstalled.
-    const amazonPaapi = await import('amazon-paapi');
-
-    // PLAIN: Tell Amazon what to search for.
-    // TECH:  SearchItems request payload per PA-API v5 spec.
-    const commonParameters = {
-      AccessKey: accessKey,
-      SecretKey: secretKey,
-      PartnerTag: partnerTag,
-      PartnerType: 'Associates',
-      Marketplace: marketplace,
-      Host: host,
-      Region: region,
-    };
-
-    const requestParameters = {
-      Keywords: keyword,
-      ItemCount: 1,
-      SortBy: 'Relevance',
-      Resources: [
-        'Images.Primary.Large',
-        'ItemInfo.Title',
-        'Offers.Listings.Price',
-      ],
-    };
-
-    // PLAIN: Call the API and read the first result.
-    // TECH:  amazon-paapi exports SearchItems; returns SearchResult object.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const data: any = await (amazonPaapi as any).SearchItems(
-      commonParameters,
-      requestParameters
-    );
-
-    const item = data?.SearchResult?.Items?.[0];
-    if (!item) return null;
-
-    return {
-      asin: item.ASIN ?? null,
-      title: item.ItemInfo?.Title?.DisplayValue ?? 'Unknown product',
-      price:
-        item.Offers?.Listings?.[0]?.Price?.DisplayAmount ?? null,
-      image_url: item.Images?.Primary?.Large?.URL ?? null,
-      product_url: item.DetailPageURL ?? null,
-      source: 'amazon_paapi',
-    };
-  } catch (err) {
-    // PLAIN: Amazon call failed — log it but don't crash the pipeline.
-    // TECH:  Surface error in console; return null to trigger mock fallback.
-    console.warn('[find-products] amazon-paapi failed:', (err as Error).message);
-    return null;
-  }
+// PLAIN: PA-API support removed.
+//        Amazon's new "Creators API" gates access behind 10 qualifying
+//        sales in 30 days — a chicken-and-egg problem for new affiliates.
+//        Until that's solved, the manual product library at /products/add
+//        is the way to bring real products into the pipeline.
+//
+// TECH:  Stub left in place so the orchestrator's three-tier resolution
+//        chain (library → API → mock) compiles unchanged. Always returns
+//        null. When PA-API access is granted later, restore the real
+//        implementation here (also re-add `amazon-paapi` to package.json).
+//
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+async function tryAmazonApi(_keyword: string): Promise<ProductInput | null> {
+  return null;
 }
 
 // PLAIN: The main handler.
