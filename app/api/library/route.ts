@@ -19,58 +19,131 @@ import {
 } from '@/lib/amazon-url';
 import { generateJson, SchemaType } from '@/lib/groq';
 
-// PLAIN: Schema we make Groq follow when suggesting niche tags.
-// TECH:  Single field response — array of tag strings.
-const TAG_SUGGESTION_SCHEMA = {
+// =============================================================================
+// AI HELPER — combined tag + niche suggestion
+// =============================================================================
+// PLAIN: One Groq call that does two things at once:
+//        1. Generates Pinterest-style niche tags for a product.
+//        2. Picks the best niche from the user's existing trending_niches
+//           catalog — OR proposes a brand-new one if none fit.
+// TECH:  Saves an API call vs. running these as two separate prompts.
+// =============================================================================
+
+// PLAIN: AI's response when matching/suggesting a niche.
+//        match_existing_id is set if the AI picks an existing niche;
+//        otherwise the new_niche fields are populated and we INSERT.
+// TECH:  Discriminated structure but represented as flat fields for
+//        Groq's JSON-mode reliability (oneOf/discriminators are flaky).
+interface ProductMetaResponse {
+  tags: string[];
+  /** PLAIN: ID of existing niche if AI found a good match, else null. */
+  match_existing_id: string | null;
+  /** PLAIN: Filled if AI is proposing a new niche. */
+  new_niche_name: string | null;
+  new_niche_description: string | null;
+  new_niche_keywords: string[];
+  new_niche_score: number | null;
+}
+
+const PRODUCT_META_SCHEMA = {
   type: SchemaType.OBJECT,
   properties: {
     tags: {
       type: SchemaType.ARRAY,
       items: { type: SchemaType.STRING },
+      description: '5-8 lowercase Pinterest-style niche keywords for this product',
+    },
+    match_existing_id: {
+      type: SchemaType.STRING,
       description:
-        '5-8 lowercase niche keywords separated by commas, e.g., ' +
-        '["skincare", "korean", "toner", "anti-acne", "glow"]',
+        'UUID of the existing niche that best fits this product. ' +
+        'Use the EXACT id from the AVAILABLE NICHES list. Use empty string ' +
+        '"" if no existing niche fits well — in that case fill new_niche_* fields.',
+    },
+    new_niche_name: {
+      type: SchemaType.STRING,
+      description:
+        'If match_existing_id is empty, propose a new niche name (2-4 words). ' +
+        'Empty string if matching to existing.',
+    },
+    new_niche_description: {
+      type: SchemaType.STRING,
+      description: 'One sentence describing the new niche. Empty if matching existing.',
+    },
+    new_niche_keywords: {
+      type: SchemaType.ARRAY,
+      items: { type: SchemaType.STRING },
+      description: '5-8 search keywords for the new niche. Empty array if matching existing.',
+    },
+    new_niche_score: {
+      type: SchemaType.NUMBER,
+      description: '0-100 confidence the new niche will earn money. 0 if matching existing.',
     },
   },
-  required: ['tags'],
+  required: [
+    'tags',
+    'match_existing_id',
+    'new_niche_name',
+    'new_niche_description',
+    'new_niche_keywords',
+    'new_niche_score',
+  ],
 } as const;
 
-interface TagResponse {
-  tags: string[];
-}
-
 /**
- * PLAIN: Asks the AI to suggest niche tags for a product based on its title.
- *        Used for the "auto-fill tags" UX in /products/add.
+ * PLAIN: One AI call that returns niche tags AND either picks an existing
+ *        niche or proposes a new one. Caller handles INSERT for new niches.
  *
- * TECH:  Single Groq call with a strict response schema. Returns empty
- *        array on failure so caller can fall back to manual entry.
+ * TECH:  Reads trending_niches as the candidate pool, asks Groq to either
+ *        return one of those IDs or propose a new niche. Returns null on
+ *        failure so the form still works without AI assistance.
  */
-async function suggestNicheTags(title: string): Promise<string[]> {
+async function suggestProductMeta(
+  title: string
+): Promise<ProductMetaResponse | null> {
   try {
+    // PLAIN: Pull existing niches so AI knows what to match against.
+    // TECH:  Lightweight SELECT — id, name, keywords are enough context.
+    const { data: existingNiches } = await supabase
+      .from('trending_niches')
+      .select('id, name, keywords')
+      .eq('is_active', true);
+
+    const nichesContext =
+      existingNiches && existingNiches.length > 0
+        ? existingNiches
+            .map(
+              (n) =>
+                `  - id: ${n.id}\n    name: "${n.name}"\n    keywords: ${n.keywords ?? '(none)'}`
+            )
+            .join('\n')
+        : '  (no existing niches yet — propose a new one)';
+
     const prompt = `
 You're helping categorise an Amazon product for a Pinterest affiliate library.
 
 PRODUCT TITLE: ${title}
 
-Generate 5-8 lowercase, single-word or two-word niche tags that describe what
-kind of audience would search for this on Pinterest. Think Pinterest search
-keywords, not product features.
+AVAILABLE NICHES (existing catalog):
+${nichesContext}
 
-Good examples:
-- "Korean skincare toner" → ["skincare", "korean", "toner", "k-beauty", "anti-acne"]
-- "Wooden plant stand 3 tier" → ["plant stand", "indoor plants", "home decor", "boho"]
-- "Air fryer 4.5L" → ["kitchen gadgets", "air fryer", "healthy cooking", "meal prep"]
+Tasks:
+1. Generate 5-8 Pinterest-style lowercase niche tags for this product.
+2. Decide if this product fits ANY of the available niches above:
+   - If YES, set match_existing_id to that niche's UUID exactly.
+   - If NO good fit exists, leave match_existing_id as empty string ("") AND
+     propose a brand-new niche by filling new_niche_name, description, keywords, score.
 
-Return JSON: { tags: [...] }
+Be honest: don't force a bad match. Better to create a focused new niche than
+shoehorn into a vaguely related existing one.
+
+Return JSON matching the schema.
     `.trim();
 
-    const result = await generateJson<TagResponse>(prompt, TAG_SUGGESTION_SCHEMA);
-    return Array.isArray(result.tags) ? result.tags : [];
+    return await generateJson<ProductMetaResponse>(prompt, PRODUCT_META_SCHEMA);
   } catch {
-    // PLAIN: AI suggestion is best-effort. Don't block the form.
-    // TECH:  Silent catch; user can type tags manually.
-    return [];
+    // PLAIN: AI failed — caller falls back to manual entry.
+    return null;
   }
 }
 
@@ -163,12 +236,50 @@ export async function POST(req: NextRequest) {
     // TECH:  Single fetch returns all three via fetchProductMetadata.
     const meta = await fetchProductMetadata(productUrl);
 
-    // PLAIN: Step 5 — for PREVIEW mode, ask AI to suggest niche tags from
-    //        the title. Skipped on SAVE if user already typed tags.
-    // TECH:  Only run AI on preview to save tokens; users can override.
+    // PLAIN: Step 5 — for PREVIEW mode, ask AI to do TWO things:
+    //          1. Suggest 5-8 niche tags
+    //          2. Either match an existing trending niche, or propose a
+    //             brand-new niche (which we'll INSERT below).
+    // TECH:  Single combined Groq call for efficiency.
     let suggestedTags: string[] = [];
+    let suggestedNicheId: string | null = null;
+    let suggestedNicheNew: { id: string; name: string } | null = null;
+
     if (mode === 'preview' && (meta.title || asin)) {
-      suggestedTags = await suggestNicheTags(meta.title ?? asin);
+      const ai = await suggestProductMeta(meta.title ?? asin);
+      if (ai) {
+        suggestedTags = ai.tags;
+
+        if (ai.match_existing_id && ai.match_existing_id.trim().length > 0) {
+          // PLAIN: AI matched an existing niche — use it directly.
+          suggestedNicheId = ai.match_existing_id;
+        } else if (ai.new_niche_name && ai.new_niche_name.trim().length > 0) {
+          // PLAIN: AI proposed a NEW niche — auto-create it now so the
+          //        dashboard immediately has it (and the dropdown can
+          //        pre-select it).
+          // TECH:  UPSERT by name to avoid duplicates if user is rapid-firing.
+          const { data: created, error: createErr } = await supabase
+            .from('trending_niches')
+            .upsert(
+              {
+                name: ai.new_niche_name.toLowerCase().trim(),
+                description: ai.new_niche_description ?? null,
+                score: ai.new_niche_score
+                  ? Math.min(100, Math.max(0, Math.round(ai.new_niche_score)))
+                  : 70,
+                keywords: ai.new_niche_keywords?.join(', ') ?? null,
+              },
+              { onConflict: 'name' }
+            )
+            .select('id, name')
+            .single();
+
+          if (!createErr && created) {
+            suggestedNicheId = created.id;
+            suggestedNicheNew = { id: created.id, name: created.name };
+          }
+        }
+      }
     }
 
     // PLAIN: Use override values from the form if the user typed them.
@@ -179,6 +290,7 @@ export async function POST(req: NextRequest) {
     const finalTags =
       body.niche_tags ??
       (suggestedTags.length > 0 ? suggestedTags.join(', ') : null);
+    const finalNicheId = body.niche_id ?? suggestedNicheId ?? null;
 
     // PLAIN: Build the data object that represents this product.
     // TECH:  Shared across preview and save responses.
@@ -193,7 +305,7 @@ export async function POST(req: NextRequest) {
       notes: body.notes ?? null,
       is_active: true,
       source: 'manual' as const,
-      niche_id: body.niche_id ?? null,
+      niche_id: finalNicheId,
     };
 
     // PLAIN: If preview mode, return without saving.
