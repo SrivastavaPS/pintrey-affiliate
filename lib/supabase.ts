@@ -59,6 +59,38 @@ export const supabase = createClient(supabaseUrl, supabaseServiceRoleKey, {
 export type PipelineRunStatus = 'running' | 'success' | 'failed';
 export type EventStatus = 'info' | 'success' | 'failed';
 export type ProductSource = 'amazon_paapi' | 'mock' | 'library';
+export type LibrarySource = 'manual' | 'amazon_paapi' | 'ai_suggested' | 'auto_extracted';
+
+// PLAIN: Shape of one row in trending_niches (the niches catalog).
+// TECH:  Mirrors db/schema-additions-v2.sql.
+export interface TrendingNiche {
+  id: string;
+  name: string;
+  description: string | null;
+  score: number | null;
+  keywords: string | null;
+  is_active: boolean;
+  created_at: string;
+  last_used_at: string | null;
+}
+
+// PLAIN: Shape of one row in product_library.
+// TECH:  Mirrors db/schema-additions.sql + v2.
+export interface LibraryProduct {
+  id: string;
+  asin: string;
+  title: string;
+  image_url: string | null;
+  product_url: string;
+  affiliate_url: string;
+  price: string | null;
+  niche_tags: string | null;
+  notes: string | null;
+  is_active: boolean;
+  source: LibrarySource;
+  niche_id: string | null;
+  created_at: string;
+}
 export type PinterestPostStatus = 'pending' | 'queued' | 'posted' | 'failed';
 
 export interface PipelineRun {

@@ -117,6 +117,8 @@ interface AddRequestBody {
   niche_tags?: string;
   notes?: string;
   image_url?: string;
+  /** PLAIN: Primary niche this product belongs to (FK to trending_niches). */
+  niche_id?: string;
 }
 
 export async function POST(req: NextRequest) {
@@ -191,6 +193,7 @@ export async function POST(req: NextRequest) {
       notes: body.notes ?? null,
       is_active: true,
       source: 'manual' as const,
+      niche_id: body.niche_id ?? null,
     };
 
     // PLAIN: If preview mode, return without saving.

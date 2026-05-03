@@ -25,7 +25,16 @@ interface LibraryProduct {
   notes: string | null;
   is_active: boolean;
   source: string;
+  niche_id: string | null;
   created_at: string;
+}
+
+// PLAIN: One niche option in the dropdown.
+// TECH:  Subset of trending_niches needed for selection.
+interface NicheOption {
+  id: string;
+  name: string;
+  score: number | null;
 }
 
 // PLAIN: Shape of the preview returned by POST /api/library (mode=preview).
@@ -70,10 +79,27 @@ export default function AddProductPage() {
   // TECH:  Refreshed after every save/delete.
   const [library, setLibrary] = useState<LibraryProduct[]>([]);
 
-  // PLAIN: Load the library list on first render.
-  // TECH:  Empty deps array → runs once on mount.
+  // PLAIN: Available niches for the dropdown.
+  // TECH:  Fetched from /api/niches on mount.
+  const [niches, setNiches] = useState<NicheOption[]>([]);
+
+  // PLAIN: Currently selected niche for this product.
+  // TECH:  Optional — products without niche show as "Uncategorised" on dashboard.
+  const [selectedNicheId, setSelectedNicheId] = useState<string>('');
+
+  // PLAIN: Load the library list + niches list on first render.
+  //        Pre-fill niche from ?niche=<id> URL param if present (deep link
+  //        from dashboard's "+ Add product" button under each niche).
+  // TECH:  Empty deps array → runs once on mount. URLSearchParams reads
+  //        the query string client-side.
   useEffect(() => {
     void refreshLibrary();
+    void refreshNiches();
+
+    if (typeof window !== 'undefined') {
+      const param = new URLSearchParams(window.location.search).get('niche');
+      if (param) setSelectedNicheId(param);
+    }
   }, []);
 
   // PLAIN: Re-fetches the library list from the server.
@@ -85,7 +111,23 @@ export default function AddProductPage() {
       setLibrary(data.products ?? []);
     } catch {
       // PLAIN: Silent fail — list is non-critical.
-      // TECH:  Could surface a toast in Phase 2.
+    }
+  }
+
+  // PLAIN: Loads the trending_niches catalog for the dropdown.
+  // TECH:  GET /api/niches; sorted by score server-side.
+  async function refreshNiches() {
+    try {
+      const res = await fetch('/api/niches');
+      const data = await res.json();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      setNiches((data.niches ?? []).map((n: any) => ({
+        id: n.id,
+        name: n.name,
+        score: n.score,
+      })));
+    } catch {
+      // PLAIN: Silent fail — dropdown just stays empty.
     }
   }
 
@@ -146,6 +188,9 @@ export default function AddProductPage() {
           price: editPrice || null,
           niche_tags: editTags || null,
           notes: editNotes || null,
+          // PLAIN: Primary niche assignment for dashboard grouping.
+          // TECH:  Empty string → null so DB FK is unset.
+          niche_id: selectedNicheId || null,
         }),
       });
       const data = await res.json();
@@ -308,6 +353,30 @@ export default function AddProductPage() {
                     AI matches niches to these tags. Edit if you want
                     different keywords. More tags = more chances your
                     product gets picked.
+                  </span>
+                </label>
+
+                <label className="block">
+                  <span className="text-xs font-semibold uppercase text-gray-500">
+                    Primary niche
+                  </span>
+                  <select
+                    value={selectedNicheId}
+                    onChange={(e) => setSelectedNicheId(e.target.value)}
+                    className="mt-1 block w-full rounded border border-gray-300 px-3 py-2 text-sm"
+                  >
+                    <option value="">— No niche assigned (Uncategorised) —</option>
+                    {niches.map((n) => (
+                      <option key={n.id} value={n.id}>
+                        {n.name}
+                        {n.score !== null ? ` (score ${n.score})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="text-xs text-gray-400">
+                    Groups this product on the dashboard. If no niches show
+                    here, click <b>✨ Discover top 10 niches</b> on the home
+                    page first.
                   </span>
                 </label>
 
