@@ -113,24 +113,138 @@ export async function fetchProductMetadata(
 
     const html = await response.text();
 
-    // PLAIN: Find <meta property="og:title" content="...">
-    // TECH:  Non-greedy capture; HTML attribute order can vary.
-    const titleMatch = html.match(
-      /<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i
-    );
-    const imageMatch = html.match(
-      /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i
-    );
+    // PLAIN: Try several strategies to find the title and image. Amazon's
+    //        HTML format changes constantly and varies between mobile/desktop/
+    //        bot-served versions, so we cast a wide net.
+    // TECH:  First success wins. Each helper returns null on miss.
+    const title =
+      extractMetaContent(html, 'og:title') ??
+      extractMetaContent(html, 'twitter:title') ??
+      extractAmazonProductTitle(html) ??
+      extractHtmlTitleTag(html);
+
+    const image =
+      extractMetaContent(html, 'og:image') ??
+      extractMetaContent(html, 'twitter:image') ??
+      extractAmazonProductImage(html) ??
+      extractLinkRelImage(html);
 
     return {
-      title: titleMatch ? decodeHtml(titleMatch[1]) : null,
-      image: imageMatch ? decodeHtml(imageMatch[1]) : null,
+      title: title ? decodeHtml(title) : null,
+      image: image ? decodeHtml(image) : null,
       price: extractPrice(html),
       ok: true,
     };
   } catch {
     return { title: null, image: null, price: null, ok: false };
   }
+}
+
+// =============================================================================
+// EXTRACTION HELPERS — try many patterns since Amazon HTML varies a lot
+// =============================================================================
+
+/**
+ * PLAIN: Reads a <meta> tag's content attribute. Handles both attribute
+ *        orders: `property=... content=...` AND `content=... property=...`.
+ *        Also accepts `name=...` instead of `property=...` for compatibility.
+ *
+ * TECH:  Two-pass regex: find the meta tag, then pull content from it.
+ *        Old single-regex approach failed when content came before property.
+ */
+function extractMetaContent(html: string, propertyName: string): string | null {
+  // PLAIN: Find every <meta ...> tag that mentions our property name.
+  // TECH:  Loose match; we'll scan the matched tag for content attribute.
+  const escaped = propertyName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const tagPattern = new RegExp(
+    `<meta\\s[^>]*?(?:property|name)=["']${escaped}["'][^>]*?>`,
+    'gi'
+  );
+
+  const tagMatches = html.match(tagPattern);
+  if (!tagMatches) return null;
+
+  for (const tag of tagMatches) {
+    const contentMatch = tag.match(/content=["']([^"']+)["']/i);
+    if (contentMatch) return contentMatch[1];
+  }
+  return null;
+}
+
+/**
+ * PLAIN: Pulls the title out of Amazon's product-page-specific element:
+ *        `<span id="productTitle">...</span>`. Used when og:title is missing.
+ *
+ * TECH:  Strips internal whitespace; trims the result.
+ */
+function extractAmazonProductTitle(html: string): string | null {
+  const m = html.match(
+    /<span[^>]*id=["']productTitle["'][^>]*>([\s\S]*?)<\/span>/i
+  );
+  if (!m) return null;
+  return m[1].replace(/\s+/g, ' ').trim() || null;
+}
+
+/**
+ * PLAIN: Pulls the main product image from Amazon-specific HTML attributes:
+ *        - `data-old-hires="..."` (high-res override on the main image)
+ *        - `id="landingImage" src="..."` (the visible main product image)
+ *        - JSON-LD image fields (often on product schema script blocks)
+ *
+ * TECH:  Three patterns tried in order; first non-empty match wins.
+ */
+function extractAmazonProductImage(html: string): string | null {
+  // PLAIN: Pattern 1 — data-old-hires (high-res zoom variant).
+  let m = html.match(/data-old-hires=["']([^"']+)["']/i);
+  if (m && m[1].startsWith('http')) return m[1];
+
+  // PLAIN: Pattern 2 — <img id="landingImage" src="...">.
+  m = html.match(
+    /<img[^>]*\bid=["']landingImage["'][^>]*\bsrc=["']([^"']+)["']/i
+  );
+  if (m && m[1].startsWith('http')) return m[1];
+
+  // PLAIN: Pattern 3 — same as above with src before id.
+  m = html.match(
+    /<img[^>]*\bsrc=["']([^"']+)["'][^>]*\bid=["']landingImage["']/i
+  );
+  if (m && m[1].startsWith('http')) return m[1];
+
+  // PLAIN: Pattern 4 — JSON-LD product schema with image field.
+  // TECH:  Look for "image":"https://..." in any JSON-LD block.
+  m = html.match(/"image"\s*:\s*"(https?:\/\/[^"]+)"/i);
+  if (m) return m[1];
+
+  return null;
+}
+
+/**
+ * PLAIN: Pulls href from `<link rel="image_src" href="...">` (older convention).
+ * TECH:  Standalone helper; keeps the main extractor readable.
+ */
+function extractLinkRelImage(html: string): string | null {
+  const m = html.match(
+    /<link[^>]*\brel=["']image_src["'][^>]*\bhref=["']([^"']+)["']/i
+  );
+  return m ? m[1] : null;
+}
+
+/**
+ * PLAIN: Last-resort title fallback — read the <title>...</title> tag.
+ *        Amazon's <title> is "Amazon.in: Buy <Product Name> Online at..."
+ *        We strip the prefix/suffix to get something usable.
+ *
+ * TECH:  Best-effort cleanup; not perfect but better than nothing.
+ */
+function extractHtmlTitleTag(html: string): string | null {
+  const m = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  if (!m) return null;
+  let title = m[1].replace(/\s+/g, ' ').trim();
+  // PLAIN: Strip Amazon boilerplate like "Amazon.in: Buy " and ": ... Online at ..."
+  title = title.replace(/^Amazon\.in\s*:\s*Buy\s+/i, '');
+  title = title.replace(/\s*[:|]\s*Buy\s+.*$/i, '');
+  title = title.replace(/\s*[:|]\s*Amazon\.in.*$/i, '');
+  return title || null;
 }
 
 /**
