@@ -16,6 +16,7 @@ import {
   fetchProductMetadata,
   buildAffiliateUrl,
   canonicalUrlFromAsin,
+  imageUrlFromAsin,
 } from '@/lib/amazon-url';
 import { generateJson, SchemaType } from '@/lib/groq';
 
@@ -258,8 +259,17 @@ export async function POST(req: NextRequest) {
     let suggestedNicheTop3: string[] = [];
     let suggestedNicheNew: { id: string; name: string } | null = null;
 
-    if (mode === 'preview' && (meta.title || asin)) {
-      const ai = await suggestProductMeta(meta.title ?? asin);
+    // PLAIN: Decide what title to feed AI.
+    //        Priority: user-supplied title (re-suggest flow) > Amazon meta title.
+    //        If neither has a real title, skip AI to avoid junk "unknown product" niches.
+    // TECH:  body.title is sent by the UI's "Re-suggest niche" button after
+    //        the user types the real title manually.
+    const userTitleHint = body.title?.trim();
+    const aiTitleSource = userTitleHint || meta.title?.trim() || '';
+    const hasRealTitle = aiTitleSource.length > 0;
+
+    if (mode === 'preview' && hasRealTitle) {
+      const ai = await suggestProductMeta(aiTitleSource);
       if (ai) {
         suggestedTags = ai.tags;
 
@@ -329,7 +339,11 @@ export async function POST(req: NextRequest) {
     // PLAIN: Use override values from the form if the user typed them.
     // TECH:  Body overrides > scraped meta > AI suggestion > defaults.
     const finalTitle = body.title ?? meta.title ?? `Amazon product ${asin}`;
-    const finalImage = body.image_url ?? meta.image ?? null;
+    // PLAIN: Image priority: user-supplied → Amazon's og:image → ASIN-based
+    //        CDN fallback. The fallback works for many products and is
+    //        better than showing a "No image" placeholder.
+    // TECH:  imageUrlFromAsin builds Amazon's product-thumbnail URL pattern.
+    const finalImage = body.image_url ?? meta.image ?? imageUrlFromAsin(asin);
     const finalPrice = body.price ?? meta.price ?? null;
     const finalTags =
       body.niche_tags ??

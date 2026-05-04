@@ -134,6 +134,24 @@ export async function fetchProductMetadata(
 }
 
 /**
+ * PLAIN: Builds a best-guess Amazon CDN image URL from just an ASIN.
+ *        Used as a fallback when og:image extraction fails (e.g., Amazon
+ *        served a CAPTCHA page from Vercel's US IP). Not guaranteed to
+ *        work for every ASIN, but catches common cases.
+ *
+ * TECH:  Amazon publishes product thumbnails at predictable patterns based
+ *        on ASIN. Different domains for different regions; we try the EU
+ *        one first since associate is India.
+ *
+ * @example
+ *   imageUrlFromAsin('B0844ZDFNH')
+ *   → 'https://m.media-amazon.com/images/P/B0844ZDFNH.01._SCLZZZZZZZ_.jpg'
+ */
+export function imageUrlFromAsin(asin: string): string {
+  return `https://m.media-amazon.com/images/P/${asin}.01._SCLZZZZZZZ_.jpg`;
+}
+
+/**
  * PLAIN: Searches the Amazon HTML for the product price. Tries several
  *        common patterns since Amazon changes its markup constantly.
  *        Returns null if no price is found.

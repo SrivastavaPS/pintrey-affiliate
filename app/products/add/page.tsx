@@ -77,6 +77,19 @@ export default function AddProductPage() {
   const [editPrice, setEditPrice] = useState('');
   const [editTags, setEditTags] = useState('');
   const [editNotes, setEditNotes] = useState('');
+  const [editImageUrl, setEditImageUrl] = useState('');
+
+  // PLAIN: True if Amazon blocked our metadata fetch — UI shows a warning
+  //        and lets user fill in the title and image URL manually.
+  // TECH:  Read from preview.title; "Amazon product <ASIN>" pattern means
+  //        the og:title fetch failed and we're using a fallback string.
+  const [extractionFailed, setExtractionFailed] = useState(false);
+
+  // PLAIN: Re-suggest niche AFTER user manually typed a real title.
+  //        Calls the same preview endpoint with a synthetic URL so AI gets
+  //        a real product name to work with.
+  // TECH:  Loading state for the "✨ Re-suggest" button.
+  const [reSuggesting, setReSuggesting] = useState(false);
 
   // PLAIN: All products currently in your library.
   // TECH:  Refreshed after every save/delete.
@@ -177,7 +190,15 @@ export default function AddProductPage() {
         setEditTitle(data.preview.title ?? '');
         setEditPrice(data.preview.price ?? '');
         setEditTags(data.preview.niche_tags ?? '');
+        setEditImageUrl(data.preview.image_url ?? '');
         setEditNotes('');
+
+        // PLAIN: Detect "extraction failed" by inspecting the title fallback.
+        //        When Amazon blocks us, the API returns "Amazon product <ASIN>".
+        // TECH:  Used to show a yellow warning banner.
+        const isFallbackTitle =
+          (data.preview.title ?? '').startsWith('Amazon product ');
+        setExtractionFailed(isFallbackTitle);
 
         // PLAIN: Pre-fill the niche dropdown with AI's best match. Always
         //        refresh the niches list first in case AI just created one.
@@ -221,6 +242,9 @@ export default function AddProductPage() {
           price: editPrice || null,
           niche_tags: editTags || null,
           notes: editNotes || null,
+          // PLAIN: Manual image URL override (used when Amazon blocked the
+          //        og:image fetch, so user pastes one themselves).
+          image_url: editImageUrl || preview.image_url || null,
           // PLAIN: Primary niche assignment for dashboard grouping.
           // TECH:  Empty string → null so DB FK is unset.
           niche_id: selectedNicheId || null,
@@ -239,9 +263,11 @@ export default function AddProductPage() {
         setEditPrice('');
         setEditTags('');
         setEditNotes('');
+        setEditImageUrl('');
         setSelectedNicheId('');
         setTopNicheSuggestions([]);
         setAiCreatedNewNiche(false);
+        setExtractionFailed(false);
         await refreshLibrary();
       }
     } catch (err) {
@@ -253,6 +279,59 @@ export default function AddProductPage() {
 
   // PLAIN: Delete a product from the library.
   // TECH:  DELETE /api/library/<id>; refresh list.
+  // PLAIN: After user manually fixes the title, re-run AI niche suggestion.
+  //        Useful when Amazon blocked our auto-extract and user typed the
+  //        real title themselves.
+  // TECH:  Calls /api/library again with mode=preview, but now the API
+  //        gets a real title to work with. Updates only the AI-driven
+  //        fields (tags, niche_id, top3) — preserves user's title/price.
+  async function handleResuggestNiche() {
+    if (!preview || !editTitle.trim()) return;
+    setReSuggesting(true);
+    setError(null);
+
+    try {
+      // PLAIN: Send a synthetic URL preview but pass the user-entered title
+      //        as a body field so AI can see it. The API uses meta.title
+      //        currently — easier to send the URL again and have the API
+      //        re-fetch (or use a server hint via title override).
+      // TECH:  We re-POST the same URL; the API will re-fetch metadata.
+      //        If still blocked, AI gets nothing and we leave fields alone.
+      //        Future: API could accept an explicit `force_title` param.
+      const knownIds = new Set(niches.map((n) => n.id));
+
+      const res = await fetch('/api/library', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: preview.product_url,
+          mode: 'preview',
+          // Hint: user-entered title. API doesn't read this yet, but
+          // we send it so a future API change can use it.
+          title: editTitle,
+        }),
+      });
+      const data = await res.json();
+
+      if (res.ok && data.preview) {
+        // PLAIN: Only update AI-suggested fields; keep user's edits.
+        setEditTags(data.preview.niche_tags ?? editTags);
+        if (data.preview.niche_id) {
+          await refreshNiches();
+          setSelectedNicheId(data.preview.niche_id);
+          setAiCreatedNewNiche(!knownIds.has(data.preview.niche_id));
+        }
+        setTopNicheSuggestions(data.preview.niche_top3 ?? []);
+      } else {
+        setError(data.error ?? 'Re-suggestion failed');
+      }
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setReSuggesting(false);
+    }
+  }
+
   async function handleDelete(id: string) {
     if (!confirm('Remove this product from your library?')) return;
     try {
@@ -344,15 +423,65 @@ export default function AddProductPage() {
 
               {/* EDITABLE FIELDS */}
               <div className="space-y-3">
+                {/* WARNING BANNER WHEN AMAZON BLOCKED THE FETCH */}
+                {extractionFailed && (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+                    <p className="font-semibold">
+                      ⚠ Amazon blocked auto-extraction.
+                    </p>
+                    <p className="mt-1">
+                      This happens because Vercel serves from US datacenters.
+                      Please fill in the <b>Title</b> and <b>Image URL</b>{' '}
+                      below manually. Then click{' '}
+                      <b>✨ Re-suggest niche</b> to let AI categorise the
+                      product correctly.
+                    </p>
+                  </div>
+                )}
+
                 <label className="block">
                   <span className="text-xs font-semibold uppercase text-gray-500">
-                    Title
+                    Title {extractionFailed && (
+                      <span className="ml-2 rounded bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-700">
+                        FILL MANUALLY
+                      </span>
+                    )}
                   </span>
                   <input
                     value={editTitle}
                     onChange={(e) => setEditTitle(e.target.value)}
                     className="mt-1 block w-full rounded border border-gray-300 px-3 py-2 text-sm"
                   />
+                  {extractionFailed && (
+                    <button
+                      type="button"
+                      onClick={handleResuggestNiche}
+                      disabled={reSuggesting || !editTitle.trim()}
+                      className="mt-2 rounded-lg bg-purple-600 px-3 py-1.5 text-xs font-semibold text-white shadow hover:bg-purple-700 disabled:bg-gray-400"
+                    >
+                      {reSuggesting ? 'Thinking…' : '✨ Re-suggest niche from title'}
+                    </button>
+                  )}
+                </label>
+
+                <label className="block">
+                  <span className="text-xs font-semibold uppercase text-gray-500">
+                    Image URL {extractionFailed && (
+                      <span className="ml-2 rounded bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-700">
+                        PASTE MANUALLY
+                      </span>
+                    )}
+                  </span>
+                  <input
+                    value={editImageUrl}
+                    onChange={(e) => setEditImageUrl(e.target.value)}
+                    placeholder="https://m.media-amazon.com/images/I/..."
+                    className="mt-1 block w-full rounded border border-gray-300 px-3 py-2 text-sm"
+                  />
+                  <span className="text-xs text-gray-400">
+                    On Amazon: right-click the product photo → &quot;Copy
+                    image link&quot; → paste here.
+                  </span>
                 </label>
 
                 <label className="block">
