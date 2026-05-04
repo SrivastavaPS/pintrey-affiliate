@@ -36,8 +36,10 @@ import { generateJson, SchemaType } from '@/lib/groq';
 //        Groq's JSON-mode reliability (oneOf/discriminators are flaky).
 interface ProductMetaResponse {
   tags: string[];
-  /** PLAIN: ID of existing niche if AI found a good match, else null. */
+  /** PLAIN: Top niche match (best fit). Empty string if nothing fits. */
   match_existing_id: string | null;
+  /** PLAIN: Up to 2 alternative niches the AI also thinks fit reasonably. */
+  alt_niche_ids: string[];
   /** PLAIN: Filled if AI is proposing a new niche. */
   new_niche_name: string | null;
   new_niche_description: string | null;
@@ -56,9 +58,16 @@ const PRODUCT_META_SCHEMA = {
     match_existing_id: {
       type: SchemaType.STRING,
       description:
-        'UUID of the existing niche that best fits this product. ' +
-        'Use the EXACT id from the AVAILABLE NICHES list. Use empty string ' +
-        '"" if no existing niche fits well — in that case fill new_niche_* fields.',
+        'UUID of the BEST existing niche for this product (single best fit). ' +
+        'Use EXACT id from AVAILABLE NICHES. Empty string "" if nothing fits.',
+    },
+    alt_niche_ids: {
+      type: SchemaType.ARRAY,
+      items: { type: SchemaType.STRING },
+      description:
+        'Up to 2 ALTERNATIVE niche UUIDs that also reasonably fit (in order ' +
+        'of relevance). Empty array if only one niche fits or none fit. ' +
+        'Do NOT include the match_existing_id here.',
     },
     new_niche_name: {
       type: SchemaType.STRING,
@@ -83,6 +92,7 @@ const PRODUCT_META_SCHEMA = {
   required: [
     'tags',
     'match_existing_id',
+    'alt_niche_ids',
     'new_niche_name',
     'new_niche_description',
     'new_niche_keywords',
@@ -129,13 +139,15 @@ ${nichesContext}
 
 Tasks:
 1. Generate 5-8 Pinterest-style lowercase niche tags for this product.
-2. Decide if this product fits ANY of the available niches above:
-   - If YES, set match_existing_id to that niche's UUID exactly.
-   - If NO good fit exists, leave match_existing_id as empty string ("") AND
-     propose a brand-new niche by filling new_niche_name, description, keywords, score.
+2. Pick the BEST existing niche match (match_existing_id), then optionally
+   list up to 2 ALTERNATIVE niches that also fit (alt_niche_ids).
+3. If NO existing niche fits well at all, leave match_existing_id empty and
+   propose a brand-new niche by filling new_niche_name, description, keywords, score.
 
-Be honest: don't force a bad match. Better to create a focused new niche than
-shoehorn into a vaguely related existing one.
+Rules:
+- alt_niche_ids must NEVER include the match_existing_id (no duplicates).
+- alt_niche_ids should be empty if only one niche fits (don't pad with weak fits).
+- Don't force a match — propose new if existing options are weak.
 
 Return JSON matching the schema.
     `.trim();
@@ -236,13 +248,14 @@ export async function POST(req: NextRequest) {
     // TECH:  Single fetch returns all three via fetchProductMetadata.
     const meta = await fetchProductMetadata(productUrl);
 
-    // PLAIN: Step 5 — for PREVIEW mode, ask AI to do TWO things:
+    // PLAIN: Step 5 — for PREVIEW mode, ask AI to:
     //          1. Suggest 5-8 niche tags
-    //          2. Either match an existing trending niche, or propose a
-    //             brand-new niche (which we'll INSERT below).
-    // TECH:  Single combined Groq call for efficiency.
+    //          2. Pick the BEST existing niche + up to 2 ALTERNATIVES
+    //          3. OR propose a brand-new niche (which we'll INSERT below).
+    // TECH:  Single combined Groq call. Returns top-3 niche IDs in order.
     let suggestedTags: string[] = [];
     let suggestedNicheId: string | null = null;
+    let suggestedNicheTop3: string[] = [];
     let suggestedNicheNew: { id: string; name: string } | null = null;
 
     if (mode === 'preview' && (meta.title || asin)) {
@@ -279,6 +292,37 @@ export async function POST(req: NextRequest) {
             suggestedNicheNew = { id: created.id, name: created.name };
           }
         }
+
+        // PLAIN: Build the top-3 suggestions list: best match + alternates.
+        //        UI shows these as quick-select buttons above the dropdown.
+        // TECH:  Filter out empty strings, dedupe, and validate against
+        //        existing niches OR the just-created one.
+        const candidates = [
+          suggestedNicheId,
+          ...(Array.isArray(ai.alt_niche_ids) ? ai.alt_niche_ids : []),
+        ].filter((id): id is string => typeof id === 'string' && id.trim().length > 0);
+
+        // PLAIN: Verify each ID exists in trending_niches (defends against
+        //        AI hallucinating UUIDs).
+        // TECH:  IN() query against trending_niches to validate IDs.
+        const seen = new Set<string>();
+        const uniqueCandidates = candidates.filter((id) => {
+          if (seen.has(id)) return false;
+          seen.add(id);
+          return true;
+        });
+
+        if (uniqueCandidates.length > 0) {
+          const { data: validNiches } = await supabase
+            .from('trending_niches')
+            .select('id')
+            .in('id', uniqueCandidates);
+
+          const validIds = new Set((validNiches ?? []).map((n) => n.id));
+          suggestedNicheTop3 = uniqueCandidates
+            .filter((id) => validIds.has(id))
+            .slice(0, 3);
+        }
       }
     }
 
@@ -308,11 +352,16 @@ export async function POST(req: NextRequest) {
       niche_id: finalNicheId,
     };
 
-    // PLAIN: If preview mode, return without saving.
-    // TECH:  Lets the form show a confirm UI before committing.
+    // PLAIN: If preview mode, return without saving. We pass niche_top3
+    //        so the UI can show quick-select buttons above the dropdown.
+    // TECH:  Extra preview-only fields don't bleed into save flow.
     if (mode === 'preview') {
       return NextResponse.json({
-        preview: productData,
+        preview: {
+          ...productData,
+          niche_top3: suggestedNicheTop3,
+        },
+        new_niche_created: suggestedNicheNew,
         meta_ok: meta.ok,
       });
     }

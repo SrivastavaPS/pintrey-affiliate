@@ -49,6 +49,9 @@ interface ProductPreview {
   price: string | null;
   niche_tags: string | null;
   notes: string | null;
+  niche_id?: string | null;
+  /** PLAIN: Top 3 niche IDs that AI thinks fit this product (best first). */
+  niche_top3?: string[];
 }
 
 export default function AddProductPage() {
@@ -86,6 +89,17 @@ export default function AddProductPage() {
   // PLAIN: Currently selected niche for this product.
   // TECH:  Optional — products without niche show as "Uncategorised" on dashboard.
   const [selectedNicheId, setSelectedNicheId] = useState<string>('');
+
+  // PLAIN: AI's top-3 niche suggestions (best first). Shown as quick-select
+  //        buttons above the dropdown so the user can pick from the obvious
+  //        candidates without scrolling.
+  // TECH:  Set from preview.niche_top3; cleared on cancel/save.
+  const [topNicheSuggestions, setTopNicheSuggestions] = useState<string[]>([]);
+
+  // PLAIN: True when the AI auto-created a brand-new niche (none of the
+  //        existing ones fit). Drives the "✨ NEW NICHE CREATED" badge.
+  // TECH:  Set in handleExtract by comparing niche IDs before/after the call.
+  const [aiCreatedNewNiche, setAiCreatedNewNiche] = useState(false);
 
   // PLAIN: Load the library list + niches list on first render.
   //        Pre-fill niche from ?niche=<id> URL param if present (deep link
@@ -153,15 +167,34 @@ export default function AddProductPage() {
       if (!res.ok) {
         setError(data.error ?? 'Could not preview product.');
       } else {
-        // PLAIN: Pre-fill the form with everything the server extracted —
-        //        title from og:title, price from page HTML, and AI-suggested
-        //        niche tags. User can edit anything before saving.
-        // TECH:  Defaults from preview; nullable values fall back to ''.
+        // PLAIN: Snapshot existing niche IDs so we can detect if the AI
+        //        just created a brand-new niche (one that wasn't there before).
+        // TECH:  Set of IDs before refresh; compared after to identify new rows.
+        const knownIds = new Set(niches.map((n) => n.id));
+
+        // PLAIN: Pre-fill all the form fields from the AI extraction.
         setPreview(data.preview);
         setEditTitle(data.preview.title ?? '');
         setEditPrice(data.preview.price ?? '');
         setEditTags(data.preview.niche_tags ?? '');
         setEditNotes('');
+
+        // PLAIN: Pre-fill the niche dropdown with AI's best match. Always
+        //        refresh the niches list first in case AI just created one.
+        // TECH:  Order matters: refresh BEFORE setting selectedNicheId so
+        //        the option exists when the <select> reads its value.
+        if (data.preview.niche_id) {
+          await refreshNiches();
+          setSelectedNicheId(data.preview.niche_id);
+          setAiCreatedNewNiche(!knownIds.has(data.preview.niche_id));
+        } else {
+          setAiCreatedNewNiche(false);
+        }
+
+        // PLAIN: Save the top-3 suggestions so the UI can show quick-pick
+        //        buttons above the dropdown.
+        // TECH:  Default to empty array; UI hides the buttons when empty.
+        setTopNicheSuggestions(data.preview.niche_top3 ?? []);
       }
     } catch (err) {
       setError((err as Error).message);
@@ -206,6 +239,9 @@ export default function AddProductPage() {
         setEditPrice('');
         setEditTags('');
         setEditNotes('');
+        setSelectedNicheId('');
+        setTopNicheSuggestions([]);
+        setAiCreatedNewNiche(false);
         await refreshLibrary();
       }
     } catch (err) {
@@ -358,12 +394,53 @@ export default function AddProductPage() {
 
                 <label className="block">
                   <span className="text-xs font-semibold uppercase text-gray-500">
-                    Primary niche
+                    Primary niche {preview.niche_id && (
+                      <span
+                        className={`ml-2 rounded px-2 py-0.5 text-[10px] font-bold ${
+                          aiCreatedNewNiche
+                            ? 'bg-amber-100 text-amber-700'
+                            : 'bg-purple-100 text-purple-700'
+                        }`}
+                      >
+                        {aiCreatedNewNiche ? '✨ NEW NICHE CREATED' : 'AI-MATCHED'}
+                      </span>
+                    )}
                   </span>
+
+                  {/* TOP-3 QUICK-SELECT BUTTONS */}
+                  {topNicheSuggestions.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {topNicheSuggestions
+                        .map((id, idx) => {
+                          const niche = niches.find((n) => n.id === id);
+                          if (!niche) return null;
+                          const isSelected = selectedNicheId === niche.id;
+                          return (
+                            <button
+                              key={niche.id}
+                              type="button"
+                              onClick={() => setSelectedNicheId(niche.id)}
+                              className={`rounded-full px-3 py-1 text-xs font-semibold transition ${
+                                isSelected
+                                  ? 'bg-purple-600 text-white shadow'
+                                  : 'bg-purple-50 text-purple-700 hover:bg-purple-100'
+                              }`}
+                            >
+                              {idx === 0 ? '⭐ ' : ''}{niche.name}
+                            </button>
+                          );
+                        })
+                        .filter(Boolean)}
+                      <span className="self-center text-xs text-gray-400">
+                        ← AI suggests one of these · or pick from list below
+                      </span>
+                    </div>
+                  )}
+
                   <select
                     value={selectedNicheId}
                     onChange={(e) => setSelectedNicheId(e.target.value)}
-                    className="mt-1 block w-full rounded border border-gray-300 px-3 py-2 text-sm"
+                    className="mt-2 block w-full rounded border border-gray-300 px-3 py-2 text-sm"
                   >
                     <option value="">— No niche assigned (Uncategorised) —</option>
                     {niches.map((n) => (
@@ -374,9 +451,11 @@ export default function AddProductPage() {
                     ))}
                   </select>
                   <span className="text-xs text-gray-400">
-                    Groups this product on the dashboard. If no niches show
-                    here, click <b>✨ Discover top 10 niches</b> on the home
-                    page first.
+                    {aiCreatedNewNiche
+                      ? "AI didn't find a good match, so it created a new niche. "
+                      : 'Click a chip above for the AI\'s pick, or change to any niche from the list. '}
+                    No niches yet? Click <b>✨ Discover top 10 niches</b> on
+                    the home page first.
                   </span>
                 </label>
 
