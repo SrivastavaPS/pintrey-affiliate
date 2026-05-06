@@ -1,51 +1,47 @@
 // =============================================================================
 // PAGE: /queue — manual posting workflow
 // =============================================================================
-// PLAIN: Shows every pin the AI has prepared but not yet posted. For each
-//        pin, you get the image, title, description, hashtags, and affiliate
-//        link with one-click "Copy" buttons. Click "Open Pinterest" to land
-//        on Pinterest's create-pin page with everything pre-filled (where
-//        possible). After posting on Pinterest, click "Mark as posted" here
-//        to clear it from the queue.
+// PLAIN: Shows every pin ready to be manually posted. Two sources merged:
+//        POC pipeline pins AND approved library pins. For each, you get
+//        copy buttons + an "Open Pinterest" link with image/description
+//        pre-filled. Click "Mark posted" after posting on Pinterest.
 //
-// TECH:  Client component. Polls /api/queue on mount + after each action.
-//        Uses navigator.clipboard for copy-to-clipboard feedback.
+// TECH:  Client component. Reads /api/queue (returns unified items with
+//        a `source` discriminator). Mark-posted dispatches to the correct
+//        endpoint based on source.
 // =============================================================================
 
 'use client';
 
 import { useEffect, useState } from 'react';
 
-// PLAIN: Shape of one queued item from /api/queue.
-// TECH:  Mirrors the SELECT shape with nested pins + products.
-interface QueuedItem {
+// PLAIN: Unified shape returned by /api/queue.
+// TECH:  source field tells us which API to PATCH for "Mark posted".
+interface QueueItem {
+  source: 'poc' | 'library';
   id: string;
-  pin_id: string;
-  status: string;
   created_at: string;
-  pins: {
+  pin: {
     id: string;
     title: string;
     description: string | null;
     hashtags: string | null;
-    image_url: string;
-    products: {
-      id: string;
-      title: string;
-      price: string | null;
-      affiliate_url: string;
-      asin: string | null;
-    } | null;
-  } | null;
+    image_url: string | null;
+  };
+  product: {
+    id: string;
+    title: string;
+    price: string | null;
+    affiliate_url: string;
+    asin: string | null;
+  };
 }
 
 export default function QueuePage() {
-  const [items, setItems] = useState<QueuedItem[]>([]);
+  const [items, setItems] = useState<QueueItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState<string | null>(null);
 
-  // PLAIN: Fetch the queue on mount.
-  // TECH:  useEffect with empty deps runs once.
   useEffect(() => {
     void refresh();
   }, []);
@@ -63,8 +59,6 @@ export default function QueuePage() {
     }
   }
 
-  // PLAIN: Copy text to clipboard with visual feedback.
-  // TECH:  navigator.clipboard.writeText; resets the badge after 1.5s.
   async function copyText(text: string, key: string) {
     try {
       await navigator.clipboard.writeText(text);
@@ -75,44 +69,58 @@ export default function QueuePage() {
     }
   }
 
-  // PLAIN: Mark a pin as posted — removes it from the queue.
-  // TECH:  PATCH /api/queue/<id> with status='posted'.
-  async function markPosted(id: string) {
+  // PLAIN: Mark a queued pin as posted. Different endpoints based on source:
+  //   - POC pipeline pin → PATCH /api/queue/<id>
+  //   - Library pin     → PATCH /api/pins/<id> with status='posted'
+  // TECH:  source-aware dispatch keeps both paths working.
+  async function markPosted(item: QueueItem) {
     try {
-      await fetch(`/api/queue/${id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      });
+      if (item.source === 'poc') {
+        await fetch(`/api/queue/${item.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        });
+      } else {
+        await fetch(`/api/pins/${item.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'posted' }),
+        });
+      }
       await refresh();
     } catch {
-      // PLAIN: User can retry — refresh on its own won't show stale state.
+      // PLAIN: User can retry.
     }
   }
 
-  // PLAIN: Remove from queue without posting.
-  // TECH:  DELETE /api/queue/<id>.
-  async function discard(id: string) {
+  // PLAIN: Remove from queue without posting (didn't like the pin).
+  // TECH:  Source-aware DELETE — same dispatch logic as markPosted.
+  async function discard(item: QueueItem) {
     if (!confirm("Remove this pin from the queue without posting?")) return;
     try {
-      await fetch(`/api/queue/${id}`, { method: 'DELETE' });
+      if (item.source === 'poc') {
+        await fetch(`/api/queue/${item.id}`, { method: 'DELETE' });
+      } else {
+        // PLAIN: For library pins, "discard" = mark as rejected (kept for analytics).
+        await fetch(`/api/pins/${item.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'rejected' }),
+        });
+      }
       await refresh();
-    } catch {}
+    } catch {
+      // PLAIN: Silent.
+    }
   }
 
-  // PLAIN: Build a Pinterest "Save URL" — opens the Pinterest pin builder
-  //        pre-filled with the affiliate link, image, and description.
-  //        User just needs to pick a board and click Save.
-  // TECH:  Pinterest's official pin builder URL accepts url, media, description.
-  function pinterestBuilderUrl(item: QueuedItem): string {
-    const product = item.pins?.products;
-    const pin = item.pins;
-    if (!product || !pin) return 'https://www.pinterest.com/';
-
+  // PLAIN: Build a Pinterest pin-builder URL pre-filled with image/link/desc.
+  function pinterestBuilderUrl(item: QueueItem): string {
     const params = new URLSearchParams({
-      url: product.affiliate_url,
-      media: pin.image_url,
-      description: `${pin.title}\n\n${pin.description ?? ''}\n\n${pin.hashtags ?? ''}`.trim(),
+      url: item.product.affiliate_url,
+      media: item.pin.image_url ?? '',
+      description: `${item.pin.title}\n\n${item.pin.description ?? ''}\n\n${item.pin.hashtags ?? ''}`.trim(),
     });
     return `https://www.pinterest.com/pin/create/button/?${params.toString()}`;
   }
@@ -120,12 +128,9 @@ export default function QueuePage() {
   return (
     <main className="min-h-screen bg-gradient-to-br from-rose-50 to-indigo-50 p-8">
       <div className="mx-auto max-w-5xl">
-        {/* HEADER */}
         <header className="mb-8 flex items-center justify-between">
           <div>
-            <h1 className="text-4xl font-bold text-gray-900">
-              Posting Queue
-            </h1>
+            <h1 className="text-4xl font-bold text-gray-900">Posting Queue</h1>
             <p className="mt-2 text-gray-600">
               Pins ready to post manually. Click <b>Open Pinterest</b>, paste,
               save. Then click <b>Mark posted</b> here to clear.
@@ -140,81 +145,89 @@ export default function QueuePage() {
           </button>
         </header>
 
-        {/* EMPTY STATE */}
         {!loading && items.length === 0 && (
           <section className="rounded-xl bg-white p-12 text-center shadow">
             <p className="text-lg font-semibold text-gray-700">
               No pins waiting.
             </p>
             <p className="mt-2 text-sm text-gray-500">
-              Run the POC at <a href="/poc" className="text-rose-600 hover:underline">/poc</a>{' '}
-              to generate pins. They&apos;ll appear here after.
+              Approve pins from the dashboard or run{' '}
+              <a href="/poc" className="text-rose-600 hover:underline">
+                /poc
+              </a>{' '}
+              to generate them.
             </p>
           </section>
         )}
 
-        {/* QUEUE ITEMS */}
         <ul className="space-y-6">
           {items.map((item) => {
-            const pin = item.pins;
-            const product = pin?.products;
-            if (!pin || !product) return null;
-
-            const fullDescription = `${pin.description ?? ''}\n\n${pin.hashtags ?? ''}`.trim();
+            const fullDescription = `${item.pin.description ?? ''}\n\n${item.pin.hashtags ?? ''}`.trim();
 
             return (
               <li
-                key={item.id}
+                key={`${item.source}-${item.id}`}
                 className="overflow-hidden rounded-xl bg-white shadow"
               >
                 <div className="grid gap-6 md:grid-cols-[300px_1fr]">
-                  {/* IMAGE PREVIEW */}
                   <div className="bg-gray-50 p-4">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={pin.image_url}
-                      alt={pin.title}
-                      className="w-full rounded-lg shadow"
-                    />
+                    {item.pin.image_url ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={item.pin.image_url}
+                        alt={item.pin.title}
+                        className="w-full rounded-lg shadow"
+                      />
+                    ) : (
+                      <div className="flex h-48 w-full items-center justify-center rounded-lg bg-gray-100 text-xs text-gray-400">
+                        No image
+                      </div>
+                    )}
                     <p className="mt-2 text-xs text-gray-500">
                       Right-click → <b>Save image as…</b> if you need a copy.
                     </p>
+                    <p className="mt-1 text-[10px] uppercase tracking-wide text-gray-400">
+                      Source: {item.source === 'library' ? 'Library' : 'POC'}
+                    </p>
                   </div>
 
-                  {/* COPY-PASTE CONTENT */}
                   <div className="space-y-3 p-4">
-                    {/* TITLE */}
                     <CopyField
                       label="Title"
-                      value={pin.title}
-                      onCopy={() => copyText(pin.title, `${item.id}-title`)}
-                      copied={copied === `${item.id}-title`}
+                      value={item.pin.title}
+                      onCopy={() =>
+                        copyText(item.pin.title, `${item.source}-${item.id}-title`)
+                      }
+                      copied={copied === `${item.source}-${item.id}-title`}
                     />
 
-                    {/* DESCRIPTION + HASHTAGS */}
                     <CopyField
                       label="Description"
                       value={fullDescription}
                       multiline
-                      onCopy={() => copyText(fullDescription, `${item.id}-desc`)}
-                      copied={copied === `${item.id}-desc`}
+                      onCopy={() =>
+                        copyText(fullDescription, `${item.source}-${item.id}-desc`)
+                      }
+                      copied={copied === `${item.source}-${item.id}-desc`}
                     />
 
-                    {/* AFFILIATE LINK */}
                     <CopyField
                       label="Destination link (your affiliate URL)"
-                      value={product.affiliate_url}
-                      onCopy={() => copyText(product.affiliate_url, `${item.id}-link`)}
-                      copied={copied === `${item.id}-link`}
+                      value={item.product.affiliate_url}
+                      onCopy={() =>
+                        copyText(
+                          item.product.affiliate_url,
+                          `${item.source}-${item.id}-link`
+                        )
+                      }
+                      copied={copied === `${item.source}-${item.id}-link`}
                     />
 
-                    {/* PRODUCT INFO */}
                     <p className="pt-2 text-xs text-gray-500">
-                      {product.title} · {product.price ?? '—'}
-                      {product.asin && ` · ASIN ${product.asin}`}
+                      {item.product.title} · {item.product.price ?? '—'}
+                      {item.product.asin && ` · ASIN ${item.product.asin}`}
                     </p>
 
-                    {/* ACTION BUTTONS */}
                     <div className="flex flex-wrap gap-2 pt-3">
                       <a
                         href={pinterestBuilderUrl(item)}
@@ -225,13 +238,13 @@ export default function QueuePage() {
                         Open Pinterest →
                       </a>
                       <button
-                        onClick={() => markPosted(item.id)}
+                        onClick={() => markPosted(item)}
                         className="rounded-lg bg-green-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-green-700"
                       >
                         ✓ Mark posted
                       </button>
                       <button
-                        onClick={() => discard(item.id)}
+                        onClick={() => discard(item)}
                         className="rounded-lg bg-gray-200 px-4 py-2 text-sm font-semibold text-gray-700 transition hover:bg-gray-300"
                       >
                         Discard

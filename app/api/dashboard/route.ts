@@ -12,9 +12,10 @@
 
 import { NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
+import { getLatestPinsByProductIds } from '@/lib/pins';
 
 // PLAIN: Shape of one product as the dashboard renders it.
-// TECH:  Product fields + nested latest pin + post status.
+// TECH:  Product fields + nested latest library_pin (with its status).
 interface DashboardProduct {
   id: string;
   asin: string;
@@ -25,17 +26,17 @@ interface DashboardProduct {
   niche_tags: string | null;
   source: string;
   created_at: string;
-  // PLAIN: Latest pin (null if none has been generated yet).
+  // PLAIN: Latest pin generated for this product (null if no pin yet).
+  // TECH:  From library_pins, joined client-side via getLatestPinsByProductIds.
   latest_pin: {
     id: string;
     title: string;
-    image_url: string;
+    image_url: string | null;
     description: string | null;
     hashtags: string | null;
-    generated_at: string;
-    // PLAIN: Latest pinterest_post status for this pin.
-    post_status: string | null;
+    status: string;
     pin_url: string | null;
+    generated_at: string;
   } | null;
 }
 
@@ -80,22 +81,41 @@ export async function GET() {
     return NextResponse.json({ error: prodErr.message }, { status: 500 });
   }
 
-  // PLAIN: Decorate each product with a null latest_pin slot. Phase 2.2
-  //        will populate this once pins are linked to library products.
-  // TECH:  Direct map; carry niche_id forward for the grouping step below.
-  const productsTyped = (productList ?? []).map((p) => ({
-    id: p.id,
-    asin: p.asin,
-    title: p.title,
-    image_url: p.image_url,
-    price: p.price,
-    affiliate_url: p.affiliate_url,
-    niche_tags: p.niche_tags,
-    source: p.source,
-    created_at: p.created_at,
-    niche_id: p.niche_id,
-    latest_pin: null,
-  }));
+  // PLAIN: Fetch the latest pin for each product (Phase 2.2).
+  // TECH:  One bulk query, returned as Map<product_id, pin>. Pins with
+  //        no library_pin yet → null.
+  const productIds = (productList ?? []).map((p) => p.id);
+  const latestPinsByProduct = await getLatestPinsByProductIds(productIds);
+
+  // PLAIN: Decorate each product with its latest pin.
+  // TECH:  Lookup from the Map; carry niche_id for grouping below.
+  const productsTyped = (productList ?? []).map((p) => {
+    const pin = latestPinsByProduct.get(p.id);
+    return {
+      id: p.id,
+      asin: p.asin,
+      title: p.title,
+      image_url: p.image_url,
+      price: p.price,
+      affiliate_url: p.affiliate_url,
+      niche_tags: p.niche_tags,
+      source: p.source,
+      created_at: p.created_at,
+      niche_id: p.niche_id,
+      latest_pin: pin
+        ? {
+            id: pin.id,
+            title: pin.title,
+            image_url: pin.image_url,
+            description: pin.description,
+            hashtags: pin.hashtags,
+            status: pin.status,
+            pin_url: pin.pin_url,
+            generated_at: pin.generated_at,
+          }
+        : null,
+    };
+  });
 
   // PLAIN: 3. Group products by niche_id.
   // TECH:  Build a Map<niche_id, products[]>; null niche_id → "uncategorised".

@@ -26,9 +26,12 @@ interface DashProduct {
   latest_pin: {
     id: string;
     title: string;
-    image_url: string;
-    post_status: string | null;
+    image_url: string | null;
+    description: string | null;
+    hashtags: string | null;
+    status: string;
     pin_url: string | null;
+    generated_at: string;
   } | null;
 }
 
@@ -54,6 +57,12 @@ export default function HomePage() {
   // PLAIN: When true, show ALL niches instead of just top 10.
   // TECH:  Toggle via "show all N" / "show top 10" button.
   const [showAll, setShowAll] = useState(false);
+
+  // PLAIN: Set of product IDs currently being acted on (generating / approving
+  //        / rejecting / regenerating). Disables their buttons until done.
+  // TECH:  Set semantics for O(1) presence checks; new Set per change so
+  //        React re-renders.
+  const [busyProductIds, setBusyProductIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     void loadDashboard();
@@ -107,6 +116,85 @@ export default function HomePage() {
       }
     } catch {
       // PLAIN: Silent — user can retry.
+    }
+  }
+
+  // PLAIN: Marks a product as "busy" (button disabled, spinner showing).
+  // TECH:  Helper for the action handlers below.
+  function setBusy(productId: string, busy: boolean) {
+    setBusyProductIds((prev) => {
+      const next = new Set(prev);
+      if (busy) next.add(productId);
+      else next.delete(productId);
+      return next;
+    });
+  }
+
+  // PLAIN: User clicked "Create pin" on a product without a pin yet.
+  // TECH:  POST /api/pins/generate with productId; reload dashboard on success.
+  async function handleCreatePin(productId: string) {
+    setBusy(productId, true);
+    try {
+      await fetch('/api/pins/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productId }),
+      });
+      await loadDashboard();
+    } catch {
+      // PLAIN: Silent — user can retry.
+    } finally {
+      setBusy(productId, false);
+    }
+  }
+
+  // PLAIN: User clicked "Approve" — pin moves to /queue for posting.
+  // TECH:  PATCH /api/pins/<id> with status='approved'.
+  async function handleApprove(pinId: string, productId: string) {
+    setBusy(productId, true);
+    try {
+      await fetch(`/api/pins/${pinId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'approved' }),
+      });
+      await loadDashboard();
+    } catch {
+      // PLAIN: Silent — user can retry.
+    } finally {
+      setBusy(productId, false);
+    }
+  }
+
+  // PLAIN: User clicked "Reject" — soft-delete the pin (kept for analytics).
+  // TECH:  PATCH /api/pins/<id> with status='rejected'.
+  async function handleReject(pinId: string, productId: string) {
+    setBusy(productId, true);
+    try {
+      await fetch(`/api/pins/${pinId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'rejected' }),
+      });
+      await loadDashboard();
+    } catch {
+      // PLAIN: Silent — user can retry.
+    } finally {
+      setBusy(productId, false);
+    }
+  }
+
+  // PLAIN: User clicked "Recreate" — delete current pin + generate fresh.
+  // TECH:  POST /api/pins/<id>/regenerate; new pin appears with status=pending_review.
+  async function handleRegenerate(pinId: string, productId: string) {
+    setBusy(productId, true);
+    try {
+      await fetch(`/api/pins/${pinId}/regenerate`, { method: 'POST' });
+      await loadDashboard();
+    } catch {
+      // PLAIN: Silent — user can retry.
+    } finally {
+      setBusy(productId, false);
     }
   }
 
@@ -325,50 +413,21 @@ export default function HomePage() {
 
                       <div className="mt-3 border-t border-gray-100 pt-2">
                         {p.latest_pin ? (
-                          <div className="flex items-center gap-2 text-xs">
-                            <span className="rounded bg-green-100 px-2 py-0.5 font-semibold text-green-700">
-                              Pin: {p.latest_pin.post_status ?? 'generated'}
-                            </span>
-                            {p.latest_pin.pin_url && (
-                              <a
-                                href={p.latest_pin.pin_url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-blue-600 hover:underline"
-                              >
-                                view →
-                              </a>
-                            )}
-                          </div>
+                          <PinStatusBlock
+                            pin={p.latest_pin}
+                            productId={p.id}
+                            busy={busyProductIds.has(p.id)}
+                            onApprove={handleApprove}
+                            onReject={handleReject}
+                            onRegenerate={handleRegenerate}
+                          />
                         ) : (
-                          <p className="text-xs italic text-gray-400">
-                            No pin yet (auto-generation in Phase 2.2)
-                          </p>
+                          <NoPinBlock
+                            productId={p.id}
+                            busy={busyProductIds.has(p.id)}
+                            onCreate={handleCreatePin}
+                          />
                         )}
-
-                        <div className="mt-2 flex gap-2 text-xs">
-                          <button
-                            disabled
-                            className="rounded bg-gray-100 px-2 py-1 text-gray-400"
-                            title="Coming in Phase 2.2"
-                          >
-                            Create pin
-                          </button>
-                          <button
-                            disabled
-                            className="rounded bg-gray-100 px-2 py-1 text-gray-400"
-                            title="Coming in Phase 2.3"
-                          >
-                            Approve
-                          </button>
-                          <button
-                            disabled
-                            className="rounded bg-gray-100 px-2 py-1 text-gray-400"
-                            title="Coming in Phase 2.3"
-                          >
-                            Reject
-                          </button>
-                        </div>
                       </div>
                     </li>
                   ))}
@@ -389,5 +448,139 @@ export default function HomePage() {
         </footer>
       </div>
     </main>
+  );
+}
+
+// =============================================================================
+// CHILD COMPONENTS
+// =============================================================================
+
+// PLAIN: Renders the "no pin yet" state with a Create-pin button.
+// TECH:  Stateless presentational component; parent owns the action handler.
+function NoPinBlock({
+  productId,
+  busy,
+  onCreate,
+}: {
+  productId: string;
+  busy: boolean;
+  onCreate: (id: string) => void;
+}) {
+  return (
+    <div>
+      <p className="text-xs italic text-gray-400">No pin yet</p>
+      <button
+        onClick={() => onCreate(productId)}
+        disabled={busy}
+        className="mt-2 rounded bg-rose-600 px-3 py-1 text-xs font-semibold text-white hover:bg-rose-700 disabled:bg-gray-400"
+      >
+        {busy ? 'Generating…' : '✨ Create pin'}
+      </button>
+    </div>
+  );
+}
+
+// PLAIN: Renders pin preview + status badge + Approve/Reject/Recreate buttons.
+// TECH:  Status-aware: shows different action sets per status.
+function PinStatusBlock({
+  pin,
+  productId,
+  busy,
+  onApprove,
+  onReject,
+  onRegenerate,
+}: {
+  pin: NonNullable<DashProduct['latest_pin']>;
+  productId: string;
+  busy: boolean;
+  onApprove: (pinId: string, productId: string) => void;
+  onReject: (pinId: string, productId: string) => void;
+  onRegenerate: (pinId: string, productId: string) => void;
+}) {
+  // PLAIN: Friendly label + colour for each pin status.
+  // TECH:  Avoids hardcoding inline; easy to extend later.
+  const statusBadge = (() => {
+    switch (pin.status) {
+      case 'pending_review':
+        return { text: 'Awaiting review', cls: 'bg-yellow-100 text-yellow-800' };
+      case 'approved':
+        return { text: 'Approved · in queue', cls: 'bg-blue-100 text-blue-800' };
+      case 'rejected':
+        return { text: 'Rejected', cls: 'bg-gray-200 text-gray-600' };
+      case 'posted':
+        return { text: 'Posted', cls: 'bg-green-100 text-green-800' };
+      case 'failed':
+        return { text: 'Failed', cls: 'bg-red-100 text-red-700' };
+      default:
+        return { text: pin.status, cls: 'bg-gray-100 text-gray-700' };
+    }
+  })();
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2 text-xs">
+        <span className={`rounded px-2 py-0.5 font-semibold ${statusBadge.cls}`}>
+          Pin: {statusBadge.text}
+        </span>
+        {pin.pin_url && (
+          <a
+            href={pin.pin_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-blue-600 hover:underline"
+          >
+            view →
+          </a>
+        )}
+      </div>
+
+      <p className="line-clamp-2 text-xs text-gray-700">{pin.title}</p>
+
+      {/* ACTION BUTTONS — different sets per status */}
+      <div className="flex flex-wrap gap-2 text-xs">
+        {pin.status === 'pending_review' && (
+          <>
+            <button
+              onClick={() => onApprove(pin.id, productId)}
+              disabled={busy}
+              className="rounded bg-green-600 px-2 py-1 font-semibold text-white hover:bg-green-700 disabled:bg-gray-400"
+            >
+              ✓ Approve
+            </button>
+            <button
+              onClick={() => onReject(pin.id, productId)}
+              disabled={busy}
+              className="rounded bg-gray-200 px-2 py-1 font-semibold text-gray-700 hover:bg-gray-300 disabled:bg-gray-100"
+            >
+              ✕ Reject
+            </button>
+            <button
+              onClick={() => onRegenerate(pin.id, productId)}
+              disabled={busy}
+              className="rounded bg-purple-100 px-2 py-1 font-semibold text-purple-700 hover:bg-purple-200 disabled:bg-gray-100"
+            >
+              ↻ Recreate
+            </button>
+          </>
+        )}
+        {(pin.status === 'rejected' || pin.status === 'failed') && (
+          <button
+            onClick={() => onRegenerate(pin.id, productId)}
+            disabled={busy}
+            className="rounded bg-purple-100 px-2 py-1 font-semibold text-purple-700 hover:bg-purple-200 disabled:bg-gray-100"
+          >
+            ↻ Try again
+          </button>
+        )}
+        {pin.status === 'approved' && (
+          <a
+            href="/queue"
+            className="rounded bg-blue-100 px-2 py-1 font-semibold text-blue-700 hover:bg-blue-200"
+          >
+            Open queue →
+          </a>
+        )}
+      </div>
+    </div>
   );
 }

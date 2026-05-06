@@ -393,6 +393,26 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
+    // PLAIN: Fire-and-forget pin generation. We don't await — the form
+    //        returns immediately, and the pin appears on the dashboard a
+    //        few seconds later when the AI call finishes.
+    // TECH:  Dynamic import to keep cold-start lean for users who never
+    //        hit save. Errors are swallowed (logged) since pin gen is
+    //        best-effort — user can retry from the dashboard via Recreate.
+    if (data?.id) {
+      void (async () => {
+        try {
+          const { generatePinForProductId } = await import('@/lib/pins');
+          await generatePinForProductId(data.id);
+        } catch (err) {
+          console.error(
+            '[library] background pin generation failed:',
+            (err as Error).message
+          );
+        }
+      })();
+    }
+
     return NextResponse.json({ product: data });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'unknown error';

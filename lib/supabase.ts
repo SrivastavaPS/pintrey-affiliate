@@ -92,6 +92,25 @@ export interface LibraryProduct {
   created_at: string;
 }
 export type PinterestPostStatus = 'pending' | 'queued' | 'posted' | 'failed';
+export type LibraryPinStatus = 'pending_review' | 'approved' | 'rejected' | 'posted' | 'failed';
+
+// PLAIN: One row in library_pins — an AI-generated pin for a library product.
+// TECH:  Mirrors db/schema-additions-v3.sql.
+export interface LibraryPin {
+  id: string;
+  product_id: string;
+  title: string;
+  description: string | null;
+  hashtags: string | null;
+  image_url: string | null;
+  ai_image_prompt: string | null;
+  status: LibraryPinStatus;
+  posted_at: string | null;
+  pinterest_pin_id: string | null;
+  pin_url: string | null;
+  error_message: string | null;
+  generated_at: string;
+}
 
 export interface PipelineRun {
   id: string;
