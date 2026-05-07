@@ -202,6 +202,13 @@ export default function HomePage() {
           >
             {loading ? 'Loading…' : 'Refresh'}
           </button>
+          <a
+            href="/niches/cleanup"
+            className="rounded-lg bg-white px-4 py-3 text-sm font-semibold text-gray-700 shadow hover:bg-gray-50"
+            title="Find duplicate niches and merge them"
+          >
+            🧹 Clean up
+          </a>
           <span className="text-sm text-gray-500">
             Showing {displayedNiches.length} of {niches.length} niche
             {niches.length === 1 ? '' : 's'} · {totalProducts} products
