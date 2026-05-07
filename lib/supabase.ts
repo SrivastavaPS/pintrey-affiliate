@@ -93,6 +93,22 @@ export interface LibraryProduct {
 }
 export type PinterestPostStatus = 'pending' | 'queued' | 'posted' | 'failed';
 export type LibraryPinStatus = 'pending_review' | 'approved' | 'rejected' | 'posted' | 'failed';
+export type SuggestionStatus = 'pending' | 'added' | 'dismissed';
+
+// PLAIN: One AI-suggested product to add for a niche.
+// TECH:  Mirrors db/schema-additions-v4.sql.
+export interface NicheProductSuggestion {
+  id: string;
+  niche_id: string;
+  product_name: string;
+  brand: string | null;
+  approximate_price: string | null;
+  why_relevant: string | null;
+  search_query: string;
+  status: SuggestionStatus;
+  added_product_id: string | null;
+  created_at: string;
+}
 
 // PLAIN: One row in library_pins — an AI-generated pin for a library product.
 // TECH:  Mirrors db/schema-additions-v3.sql.

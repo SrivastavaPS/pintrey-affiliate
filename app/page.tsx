@@ -305,6 +305,9 @@ export default function HomePage() {
                     </button>
                   </div>
                 </div>
+
+                {/* AI SUGGESTIONS PANEL */}
+                <SuggestionsPanel nicheId={niche.id} nicheName={niche.name} />
               </header>
 
               {niche.products.length === 0 ? (
@@ -453,6 +456,233 @@ function PinStatusRow({
           </a>
         )}
       </div>
+    </div>
+  );
+}
+
+// =============================================================================
+// CHILD: SuggestionsPanel
+// =============================================================================
+// PLAIN: Per-niche AI suggestions panel. Lazy-loads on first expand. Each
+//        suggestion is a name + brand + price hint + "Search Amazon" button.
+//        User searches → finds real product → adds via /products/add → comes
+//        back here and clicks "Mark added".
+// TECH:  Self-contained: fetches /api/niches/<id>/suggestions on demand.
+// =============================================================================
+
+interface Suggestion {
+  id: string;
+  product_name: string;
+  brand: string | null;
+  approximate_price: string | null;
+  why_relevant: string | null;
+  search_query: string;
+  status: string;
+}
+
+function SuggestionsPanel({
+  nicheId,
+  nicheName,
+}: {
+  nicheId: string;
+  nicheName: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [suggestions, setSuggestions] = useState<Suggestion[] | null>(null);
+  const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
+
+  // PLAIN: Lazy-load suggestions when the user expands the panel.
+  // TECH:  Triggers GET /api/niches/<id>/suggestions on first open.
+  async function loadSuggestions() {
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/niches/${nicheId}/suggestions`);
+      const data = await res.json();
+      setSuggestions(data.suggestions ?? []);
+    } catch {
+      // PLAIN: Silent — user can hit refresh.
+      setSuggestions([]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // PLAIN: Click "Generate ideas" → AI brainstorms 10 products.
+  // TECH:  POST /api/niches/<id>/suggestions; replaces existing pending list.
+  async function generate() {
+    setGenerating(true);
+    try {
+      const res = await fetch(`/api/niches/${nicheId}/suggestions`, {
+        method: 'POST',
+      });
+      const data = await res.json();
+      if (data.suggestions) setSuggestions(data.suggestions);
+    } catch {
+      // PLAIN: Silent.
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  // PLAIN: Mark a suggestion as added (user has added the real product).
+  // TECH:  PATCH; refresh list afterwards.
+  async function markAdded(id: string) {
+    setBusyIds((s) => new Set(s).add(id));
+    try {
+      await fetch(`/api/niches/${nicheId}/suggestions/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'added' }),
+      });
+      await loadSuggestions();
+    } finally {
+      setBusyIds((s) => {
+        const n = new Set(s);
+        n.delete(id);
+        return n;
+      });
+    }
+  }
+
+  // PLAIN: Dismiss a suggestion (user not interested).
+  async function dismiss(id: string) {
+    setBusyIds((s) => new Set(s).add(id));
+    try {
+      await fetch(`/api/niches/${nicheId}/suggestions/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'dismissed' }),
+      });
+      await loadSuggestions();
+    } finally {
+      setBusyIds((s) => {
+        const n = new Set(s);
+        n.delete(id);
+        return n;
+      });
+    }
+  }
+
+  // PLAIN: Open Amazon India search in a new tab using the suggestion's query.
+  function searchAmazon(query: string) {
+    const tag = 'prakshita-21';
+    const url = `https://www.amazon.in/s?k=${encodeURIComponent(query)}&tag=${tag}`;
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }
+
+  // PLAIN: Toggle panel open/closed; load on first expand.
+  function toggle() {
+    if (!open && suggestions === null) {
+      void loadSuggestions();
+    }
+    setOpen(!open);
+  }
+
+  const pending = (suggestions ?? []).filter((s) => s.status === 'pending');
+
+  return (
+    <div className="mt-4 border-t border-gray-200 pt-3">
+      <button
+        onClick={toggle}
+        className="flex w-full items-center justify-between text-left text-sm font-semibold text-purple-700 hover:text-purple-900"
+      >
+        <span>
+          ✨ AI product suggestions for &quot;{nicheName}&quot;
+          {pending.length > 0 && (
+            <span className="ml-2 rounded-full bg-purple-100 px-2 py-0.5 text-xs font-bold">
+              {pending.length}
+            </span>
+          )}
+        </span>
+        <span className="text-xs">{open ? '▲' : '▼'}</span>
+      </button>
+
+      {open && (
+        <div className="mt-3 space-y-3">
+          {/* GENERATE BUTTON */}
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={generate}
+              disabled={generating}
+              className="rounded-lg bg-purple-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-purple-700 disabled:bg-gray-400"
+            >
+              {generating
+                ? 'Brainstorming…'
+                : suggestions && suggestions.length > 0
+                  ? '↻ Regenerate ideas'
+                  : '✨ Generate 10 product ideas'}
+            </button>
+            <span className="text-xs text-gray-500">
+              AI proposes specific Amazon India products. You search →
+              verify → paste URL into <a href="/products/add" className="underline">/products/add</a>.
+            </span>
+          </div>
+
+          {/* SUGGESTIONS LIST */}
+          {loading && (
+            <p className="text-xs italic text-gray-500">Loading…</p>
+          )}
+
+          {!loading && suggestions !== null && suggestions.length === 0 && (
+            <p className="rounded bg-gray-50 p-3 text-xs italic text-gray-500">
+              No suggestions yet. Click <b>✨ Generate 10 product ideas</b> above.
+            </p>
+          )}
+
+          {pending.length > 0 && (
+            <ul className="space-y-2">
+              {pending.map((s) => (
+                <li
+                  key={s.id}
+                  className="rounded-lg border border-purple-100 bg-purple-50/40 p-3"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex-1">
+                      <p className="text-sm font-semibold text-gray-900">
+                        {s.product_name}
+                      </p>
+                      <p className="text-xs text-gray-600">
+                        {s.brand && <span className="font-semibold">{s.brand}</span>}
+                        {s.brand && s.approximate_price && ' · '}
+                        {s.approximate_price}
+                      </p>
+                      {s.why_relevant && (
+                        <p className="mt-1 text-xs italic text-gray-500">
+                          {s.why_relevant}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex shrink-0 flex-col gap-1.5">
+                      <button
+                        onClick={() => searchAmazon(s.search_query)}
+                        className="rounded bg-yellow-400 px-2.5 py-1 text-[11px] font-semibold text-gray-900 hover:bg-yellow-500"
+                      >
+                        🛒 Search Amazon
+                      </button>
+                      <button
+                        onClick={() => markAdded(s.id)}
+                        disabled={busyIds.has(s.id)}
+                        className="rounded bg-green-600 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-green-700 disabled:bg-gray-300"
+                      >
+                        ✓ Mark added
+                      </button>
+                      <button
+                        onClick={() => dismiss(s.id)}
+                        disabled={busyIds.has(s.id)}
+                        className="rounded bg-white px-2.5 py-1 text-[11px] font-semibold text-gray-600 hover:bg-gray-100 disabled:bg-gray-50"
+                      >
+                        Dismiss
+                      </button>
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
     </div>
   );
 }
