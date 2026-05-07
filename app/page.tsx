@@ -1,12 +1,13 @@
 // =============================================================================
 // PAGE: / — Home dashboard (niche hierarchy view)
 // =============================================================================
-// PLAIN: The main dashboard. Shows TOP 10 niches by score, with the products
-//        you've collected under each one. One "Add product" button at the
-//        top right (no per-niche button). Each niche has a "Search Amazon"
-//        button using the niche's keywords + a delete button.
-// TECH:  Client component. Fetches /api/dashboard on mount. Pagination of
-//        niches done client-side after sort by score DESC.
+// PLAIN: Dashboard purpose: see what's in your library, organised by niche.
+//        Pin actions (approve/reject/regenerate/post) live on /queue.
+//        Each product card just shows the latest pin's STATUS + a link to
+//        /queue. Cleaner separation of concerns.
+//
+// TECH:  Client component. Single /api/dashboard fetch. No pin mutations
+//        from this page — those go through /queue.
 // =============================================================================
 
 'use client';
@@ -27,8 +28,6 @@ interface DashProduct {
     id: string;
     title: string;
     image_url: string | null;
-    description: string | null;
-    hashtags: string | null;
     status: string;
     pin_url: string | null;
     generated_at: string;
@@ -44,8 +43,6 @@ interface DashNiche {
   products: DashProduct[];
 }
 
-// PLAIN: How many niches to show on the dashboard before "show all" button.
-// TECH:  Limit applied client-side; server returns all niches.
 const TOP_N_NICHES = 10;
 
 export default function HomePage() {
@@ -53,16 +50,11 @@ export default function HomePage() {
   const [loading, setLoading] = useState(true);
   const [discovering, setDiscovering] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  // PLAIN: When true, show ALL niches instead of just top 10.
-  // TECH:  Toggle via "show all N" / "show top 10" button.
   const [showAll, setShowAll] = useState(false);
 
-  // PLAIN: Set of product IDs currently being acted on (generating / approving
-  //        / rejecting / regenerating). Disables their buttons until done.
-  // TECH:  Set semantics for O(1) presence checks; new Set per change so
-  //        React re-renders.
-  const [busyProductIds, setBusyProductIds] = useState<Set<string>>(new Set());
+  // PLAIN: Set of product IDs whose pin is being created right now.
+  // TECH:  Disables the "Create pin" button while a request is in flight.
+  const [creatingPin, setCreatingPin] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     void loadDashboard();
@@ -104,103 +96,39 @@ export default function HomePage() {
     }
   }
 
-  // PLAIN: Permanently remove a niche. Products under it become "Uncategorised".
-  // TECH:  DELETE /api/niches/<id>; trending_niches FK has ON DELETE SET NULL
-  //        on product_library.niche_id, so products keep existing.
   async function deleteNiche(id: string, name: string) {
     if (!confirm(`Delete the niche "${name}"? Products under it will become Uncategorised.`)) return;
     try {
       const res = await fetch(`/api/niches/${id}`, { method: 'DELETE' });
-      if (res.ok) {
-        await loadDashboard();
-      }
+      if (res.ok) await loadDashboard();
     } catch {
       // PLAIN: Silent — user can retry.
     }
   }
 
-  // PLAIN: Marks a product as "busy" (button disabled, spinner showing).
-  // TECH:  Helper for the action handlers below.
-  function setBusy(productId: string, busy: boolean) {
-    setBusyProductIds((prev) => {
-      const next = new Set(prev);
-      if (busy) next.add(productId);
-      else next.delete(productId);
-      return next;
-    });
-  }
-
-  // PLAIN: User clicked "Create pin" on a product without a pin yet.
-  // TECH:  POST /api/pins/generate with productId; reload dashboard on success.
-  async function handleCreatePin(productId: string) {
-    setBusy(productId, true);
+  // PLAIN: Manually trigger pin generation for a product without a pin.
+  //        (Background trigger may have failed; this is the manual retry.)
+  // TECH:  POST /api/pins/generate; refresh dashboard on success.
+  async function createPin(productId: string) {
+    setCreatingPin((s) => new Set(s).add(productId));
     try {
-      await fetch('/api/pins/generate', {
+      const res = await fetch('/api/pins/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ productId }),
       });
-      await loadDashboard();
+      if (res.ok) await loadDashboard();
     } catch {
       // PLAIN: Silent — user can retry.
     } finally {
-      setBusy(productId, false);
-    }
-  }
-
-  // PLAIN: User clicked "Approve" — pin moves to /queue for posting.
-  // TECH:  PATCH /api/pins/<id> with status='approved'.
-  async function handleApprove(pinId: string, productId: string) {
-    setBusy(productId, true);
-    try {
-      await fetch(`/api/pins/${pinId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'approved' }),
+      setCreatingPin((s) => {
+        const next = new Set(s);
+        next.delete(productId);
+        return next;
       });
-      await loadDashboard();
-    } catch {
-      // PLAIN: Silent — user can retry.
-    } finally {
-      setBusy(productId, false);
     }
   }
 
-  // PLAIN: User clicked "Reject" — soft-delete the pin (kept for analytics).
-  // TECH:  PATCH /api/pins/<id> with status='rejected'.
-  async function handleReject(pinId: string, productId: string) {
-    setBusy(productId, true);
-    try {
-      await fetch(`/api/pins/${pinId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'rejected' }),
-      });
-      await loadDashboard();
-    } catch {
-      // PLAIN: Silent — user can retry.
-    } finally {
-      setBusy(productId, false);
-    }
-  }
-
-  // PLAIN: User clicked "Recreate" — delete current pin + generate fresh.
-  // TECH:  POST /api/pins/<id>/regenerate; new pin appears with status=pending_review.
-  async function handleRegenerate(pinId: string, productId: string) {
-    setBusy(productId, true);
-    try {
-      await fetch(`/api/pins/${pinId}/regenerate`, { method: 'POST' });
-      await loadDashboard();
-    } catch {
-      // PLAIN: Silent — user can retry.
-    } finally {
-      setBusy(productId, false);
-    }
-  }
-
-  // PLAIN: Open Amazon India search in a new tab using the niche's keywords.
-  // TECH:  Opens https://www.amazon.in/s?k=<keywords>&tag=<store>; user's
-  //        affiliate tag is attached so any purchase still pays commission.
   function searchAmazonForNiche(niche: DashNiche) {
     const keywords = niche.keywords?.split(',')[0]?.trim() || niche.name;
     const tag = 'prakshita-21';
@@ -208,14 +136,15 @@ export default function HomePage() {
     window.open(url, '_blank', 'noopener,noreferrer');
   }
 
-  // PLAIN: Decide which niches to render. Always sort by score DESC; cap to
-  //        top 10 unless user clicked "show all".
-  // TECH:  Defensive copy; doesn't mutate the niches state array.
   const displayedNiches = [...niches]
     .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
     .slice(0, showAll ? niches.length : TOP_N_NICHES);
 
   const hiddenCount = niches.length - displayedNiches.length;
+  const totalProducts = niches.reduce((s, n) => s + n.products.length, 0);
+  const pinsPending = niches
+    .flatMap((n) => n.products)
+    .filter((p) => p.latest_pin?.status === 'pending_review').length;
 
   return (
     <main className="min-h-screen bg-gradient-to-br from-rose-50 to-indigo-50">
@@ -232,6 +161,11 @@ export default function HomePage() {
           <nav className="flex items-center gap-4 text-sm">
             <a href="/queue" className="text-gray-600 hover:text-rose-600">
               Queue
+              {pinsPending > 0 && (
+                <span className="ml-1 rounded-full bg-yellow-200 px-2 text-[10px] font-bold text-yellow-800">
+                  {pinsPending}
+                </span>
+              )}
             </a>
             <a href="/poc" className="text-gray-600 hover:text-rose-600">
               Run POC
@@ -242,7 +176,6 @@ export default function HomePage() {
             >
               Pinterest
             </a>
-            {/* PLAIN: Single primary CTA for adding a product. */}
             <a
               href="/products/add"
               className="rounded-lg bg-rose-600 px-4 py-2 font-semibold text-white shadow hover:bg-rose-700"
@@ -271,8 +204,7 @@ export default function HomePage() {
           </button>
           <span className="text-sm text-gray-500">
             Showing {displayedNiches.length} of {niches.length} niche
-            {niches.length === 1 ? '' : 's'} ·{' '}
-            {niches.reduce((sum, n) => sum + n.products.length, 0)} products
+            {niches.length === 1 ? '' : 's'} · {totalProducts} products
           </span>
           {hiddenCount > 0 && (
             <button
@@ -292,6 +224,16 @@ export default function HomePage() {
           )}
         </section>
 
+        {pinsPending > 0 && (
+          <div className="mb-6 rounded-lg bg-yellow-50 p-4 text-sm text-yellow-800">
+            <b>{pinsPending}</b> pin{pinsPending === 1 ? '' : 's'} awaiting your
+            review.{' '}
+            <a href="/queue" className="font-semibold underline">
+              Open queue →
+            </a>
+          </div>
+        )}
+
         {error && (
           <div className="mb-6 rounded-lg bg-red-50 p-4 text-sm text-red-700">
             {error}
@@ -310,7 +252,6 @@ export default function HomePage() {
           </section>
         )}
 
-        {/* NICHE LIST */}
         <div className="space-y-6">
           {displayedNiches.map((niche) => (
             <section
@@ -349,19 +290,16 @@ export default function HomePage() {
                     )}
                   </div>
 
-                  {/* NICHE ACTION BUTTONS */}
                   <div className="flex shrink-0 flex-col gap-2">
                     <button
                       onClick={() => searchAmazonForNiche(niche)}
                       className="whitespace-nowrap rounded-lg bg-yellow-400 px-3 py-2 text-xs font-semibold text-gray-900 shadow hover:bg-yellow-500"
-                      title="Open Amazon India search using this niche's keywords"
                     >
                       🛒 Search Amazon
                     </button>
                     <button
                       onClick={() => deleteNiche(niche.id, niche.name)}
                       className="whitespace-nowrap rounded-lg bg-white px-3 py-2 text-xs font-semibold text-red-600 shadow hover:bg-red-50"
-                      title="Delete this niche (products keep existing as Uncategorised)"
                     >
                       ✕ Delete niche
                     </button>
@@ -373,7 +311,7 @@ export default function HomePage() {
                 <div className="p-6 text-sm italic text-gray-500">
                   No products in this niche yet. Use{' '}
                   <b>🛒 Search Amazon</b> to find products, then{' '}
-                  <b>+ Add product</b> at the top to paste their URLs.
+                  <b>+ Add product</b> at the top.
                 </div>
               ) : (
                 <ul className="grid grid-cols-1 gap-4 p-4 md:grid-cols-2 lg:grid-cols-3">
@@ -411,24 +349,11 @@ export default function HomePage() {
                         </p>
                       </div>
 
-                      <div className="mt-3 border-t border-gray-100 pt-2">
-                        {p.latest_pin ? (
-                          <PinStatusBlock
-                            pin={p.latest_pin}
-                            productId={p.id}
-                            busy={busyProductIds.has(p.id)}
-                            onApprove={handleApprove}
-                            onReject={handleReject}
-                            onRegenerate={handleRegenerate}
-                          />
-                        ) : (
-                          <NoPinBlock
-                            productId={p.id}
-                            busy={busyProductIds.has(p.id)}
-                            onCreate={handleCreatePin}
-                          />
-                        )}
-                      </div>
+                      <PinStatusRow
+                        product={p}
+                        creating={creatingPin.has(p.id)}
+                        onCreate={() => createPin(p.id)}
+                      />
                     </li>
                   ))}
                 </ul>
@@ -452,59 +377,47 @@ export default function HomePage() {
 }
 
 // =============================================================================
-// CHILD COMPONENTS
+// CHILD: PinStatusRow
 // =============================================================================
-
-// PLAIN: Renders the "no pin yet" state with a Create-pin button.
-// TECH:  Stateless presentational component; parent owns the action handler.
-function NoPinBlock({
-  productId,
-  busy,
+// PLAIN: Renders pin status for a product card. No action buttons here —
+//        all pin management happens on /queue.
+// TECH:  Three states: no pin (show Create button), has pin (show status
+//        badge + link to /queue).
+// =============================================================================
+function PinStatusRow({
+  product,
+  creating,
   onCreate,
 }: {
-  productId: string;
-  busy: boolean;
-  onCreate: (id: string) => void;
+  product: DashProduct;
+  creating: boolean;
+  onCreate: () => void;
 }) {
-  return (
-    <div>
-      <p className="text-xs italic text-gray-400">No pin yet</p>
-      <button
-        onClick={() => onCreate(productId)}
-        disabled={busy}
-        className="mt-2 rounded bg-rose-600 px-3 py-1 text-xs font-semibold text-white hover:bg-rose-700 disabled:bg-gray-400"
-      >
-        {busy ? 'Generating…' : '✨ Create pin'}
-      </button>
-    </div>
-  );
-}
+  const pin = product.latest_pin;
 
-// PLAIN: Renders pin preview + status badge + Approve/Reject/Recreate buttons.
-// TECH:  Status-aware: shows different action sets per status.
-function PinStatusBlock({
-  pin,
-  productId,
-  busy,
-  onApprove,
-  onReject,
-  onRegenerate,
-}: {
-  pin: NonNullable<DashProduct['latest_pin']>;
-  productId: string;
-  busy: boolean;
-  onApprove: (pinId: string, productId: string) => void;
-  onReject: (pinId: string, productId: string) => void;
-  onRegenerate: (pinId: string, productId: string) => void;
-}) {
-  // PLAIN: Friendly label + colour for each pin status.
-  // TECH:  Avoids hardcoding inline; easy to extend later.
-  const statusBadge = (() => {
+  if (!pin) {
+    return (
+      <div className="mt-3 border-t border-gray-100 pt-2">
+        <p className="text-xs italic text-gray-400">
+          {creating ? 'Generating pin…' : 'No pin yet'}
+        </p>
+        <button
+          onClick={onCreate}
+          disabled={creating}
+          className="mt-2 rounded bg-rose-600 px-3 py-1 text-xs font-semibold text-white hover:bg-rose-700 disabled:bg-gray-400"
+        >
+          {creating ? '…' : '✨ Create pin'}
+        </button>
+      </div>
+    );
+  }
+
+  const badge = (() => {
     switch (pin.status) {
       case 'pending_review':
         return { text: 'Awaiting review', cls: 'bg-yellow-100 text-yellow-800' };
       case 'approved':
-        return { text: 'Approved · in queue', cls: 'bg-blue-100 text-blue-800' };
+        return { text: 'Approved', cls: 'bg-blue-100 text-blue-800' };
       case 'rejected':
         return { text: 'Rejected', cls: 'bg-gray-200 text-gray-600' };
       case 'posted':
@@ -517,67 +430,26 @@ function PinStatusBlock({
   })();
 
   return (
-    <div className="space-y-2">
-      <div className="flex items-center gap-2 text-xs">
-        <span className={`rounded px-2 py-0.5 font-semibold ${statusBadge.cls}`}>
-          Pin: {statusBadge.text}
+    <div className="mt-3 border-t border-gray-100 pt-2">
+      <div className="flex items-center justify-between">
+        <span className={`rounded px-2 py-0.5 text-xs font-semibold ${badge.cls}`}>
+          {badge.text}
         </span>
-        {pin.pin_url && (
+        {pin.pin_url ? (
           <a
             href={pin.pin_url}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-blue-600 hover:underline"
+            className="text-xs text-blue-600 hover:underline"
           >
-            view →
+            view live →
           </a>
-        )}
-      </div>
-
-      <p className="line-clamp-2 text-xs text-gray-700">{pin.title}</p>
-
-      {/* ACTION BUTTONS — different sets per status */}
-      <div className="flex flex-wrap gap-2 text-xs">
-        {pin.status === 'pending_review' && (
-          <>
-            <button
-              onClick={() => onApprove(pin.id, productId)}
-              disabled={busy}
-              className="rounded bg-green-600 px-2 py-1 font-semibold text-white hover:bg-green-700 disabled:bg-gray-400"
-            >
-              ✓ Approve
-            </button>
-            <button
-              onClick={() => onReject(pin.id, productId)}
-              disabled={busy}
-              className="rounded bg-gray-200 px-2 py-1 font-semibold text-gray-700 hover:bg-gray-300 disabled:bg-gray-100"
-            >
-              ✕ Reject
-            </button>
-            <button
-              onClick={() => onRegenerate(pin.id, productId)}
-              disabled={busy}
-              className="rounded bg-purple-100 px-2 py-1 font-semibold text-purple-700 hover:bg-purple-200 disabled:bg-gray-100"
-            >
-              ↻ Recreate
-            </button>
-          </>
-        )}
-        {(pin.status === 'rejected' || pin.status === 'failed') && (
-          <button
-            onClick={() => onRegenerate(pin.id, productId)}
-            disabled={busy}
-            className="rounded bg-purple-100 px-2 py-1 font-semibold text-purple-700 hover:bg-purple-200 disabled:bg-gray-100"
-          >
-            ↻ Try again
-          </button>
-        )}
-        {pin.status === 'approved' && (
+        ) : (
           <a
             href="/queue"
-            className="rounded bg-blue-100 px-2 py-1 font-semibold text-blue-700 hover:bg-blue-200"
+            className="text-xs text-rose-600 hover:underline"
           >
-            Open queue →
+            manage in queue →
           </a>
         )}
       </div>

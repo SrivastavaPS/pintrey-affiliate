@@ -10,6 +10,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { regeneratePin } from '@/lib/pins';
 
+// PLAIN: Allow up to 30s for AI regeneration. Default Vercel limit is 10s.
+export const maxDuration = 30;
+
 interface RouteContext {
   params: Promise<{ id: string }>;
 }

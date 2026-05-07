@@ -10,6 +10,12 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
+
+// PLAIN: Allow up to 30s for the request — extraction + AI niche match +
+//        AI pin generation can together take 8-15s. Default Vercel hobby
+//        tier limit is 10s which is too tight.
+// TECH:  Next.js convention; Vercel reads this to set function timeout.
+export const maxDuration = 30;
 import {
   extractAsin,
   resolveShortUrl,
@@ -393,27 +399,32 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    // PLAIN: Fire-and-forget pin generation. We don't await — the form
-    //        returns immediately, and the pin appears on the dashboard a
-    //        few seconds later when the AI call finishes.
-    // TECH:  Dynamic import to keep cold-start lean for users who never
-    //        hit save. Errors are swallowed (logged) since pin gen is
-    //        best-effort — user can retry from the dashboard via Recreate.
+    // PLAIN: Generate the pin INLINE (not in background). On Vercel,
+    //        background promises die when the response sends, so we await.
+    //        The form takes ~5-10s longer but it's reliable. The UI shows
+    //        a "Generating pin…" state during this time.
+    // TECH:  Dynamic import keeps lib/pins out of cold-start for callers
+    //        that don't save. We capture the error so the user sees it
+    //        instead of silently failing.
+    let pinGenError: string | null = null;
+    let pinId: string | null = null;
     if (data?.id) {
-      void (async () => {
-        try {
-          const { generatePinForProductId } = await import('@/lib/pins');
-          await generatePinForProductId(data.id);
-        } catch (err) {
-          console.error(
-            '[library] background pin generation failed:',
-            (err as Error).message
-          );
-        }
-      })();
+      try {
+        const { generatePinForProductId } = await import('@/lib/pins');
+        const pin = await generatePinForProductId(data.id);
+        pinId = pin.id;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'unknown error';
+        console.error('[library] pin generation failed:', msg);
+        pinGenError = msg;
+      }
     }
 
-    return NextResponse.json({ product: data });
+    return NextResponse.json({
+      product: data,
+      pin_id: pinId,
+      pin_gen_error: pinGenError,
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'unknown error';
     return NextResponse.json({ error: message }, { status: 500 });

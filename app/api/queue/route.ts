@@ -1,28 +1,31 @@
 // =============================================================================
 // API ROUTE: GET /api/queue
 // =============================================================================
-// PLAIN: Returns every pin that's ready to be manually posted to Pinterest.
-//        Two sources merged into one list:
-//          1. POC pipeline pins (pinterest_posts where status='queued')
-//          2. Approved library pins (library_pins where status='approved')
+// PLAIN: Returns every library pin (regardless of status) so the /queue
+//        page can group them into Pending Review / Approved / Posted.
+//        Also includes POC pipeline pins from pinterest_posts (status='queued')
+//        for backward-compatibility with the existing POC flow.
 //
-// TECH:  Two SELECTs, merged into a single sorted array. Each item carries
-//        a 'source' discriminator so the /queue page knows which API to
-//        call for "Mark posted".
+// TECH:  Two SELECTs. Each item carries a `source` ('library' | 'poc') and
+//        a `status` (one of pending_review|approved|posted|rejected|queued).
+//        UI groups client-side by status.
 // =============================================================================
 
 import { NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
 
-// PLAIN: A unified shape both sources can fit into.
-// TECH:  source field tells the UI which PATCH endpoint to call.
 interface QueueItem {
-  // PLAIN: 'poc' for old POC-pipeline pins, 'library' for approved library pins.
   source: 'poc' | 'library';
   /** PLAIN: Underlying row id (pinterest_posts.id or library_pins.id). */
   id: string;
-  /** PLAIN: When it was queued/approved. */
+  /** PLAIN: Pin lifecycle status — drives which buttons the UI shows. */
+  status: string;
+  /** PLAIN: When it was created/queued. */
   created_at: string;
+  /** PLAIN: Set when status='posted', else null. */
+  posted_at: string | null;
+  /** PLAIN: Live Pinterest pin URL after posting (manual or auto). */
+  pin_url: string | null;
   pin: {
     id: string;
     title: string;
@@ -40,14 +43,16 @@ interface QueueItem {
 }
 
 export async function GET() {
-  // PLAIN: 1. Fetch POC pipeline queued pins (existing behaviour, unchanged).
-  // TECH:  Same shape as before — pinterest_posts joined to pins+products.
+  // PLAIN: 1. POC pipeline queued pins (legacy, may be empty for most users).
   const { data: pocItems } = await supabase
     .from('pinterest_posts')
     .select(
       `
       id,
+      status,
       created_at,
+      posted_at,
+      pin_url,
       pins (
         id,
         title,
@@ -64,17 +69,20 @@ export async function GET() {
       )
       `
     )
-    .eq('status', 'queued')
+    .in('status', ['queued', 'posted'])
     .order('created_at', { ascending: false });
 
-  // PLAIN: 2. Fetch approved library pins (Phase 2.3 addition).
-  // TECH:  library_pins joined to product_library for product context.
+  // PLAIN: 2. ALL library pins regardless of status. The UI buckets by
+  //        status so user sees Pending / Approved / Posted sections.
   const { data: libraryItems } = await supabase
     .from('library_pins')
     .select(
       `
       id,
+      status,
       generated_at,
+      posted_at,
+      pin_url,
       title,
       description,
       hashtags,
@@ -88,12 +96,8 @@ export async function GET() {
       )
       `
     )
-    .eq('status', 'approved')
     .order('generated_at', { ascending: false });
 
-  // PLAIN: Normalise both shapes into the unified QueueItem.
-  // TECH:  TypeScript can't auto-derive the joined select shape, so we
-  //        cast through `any` for the nested objects.
   const items: QueueItem[] = [];
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -102,7 +106,10 @@ export async function GET() {
     items.push({
       source: 'poc',
       id: row.id,
+      status: row.status,
       created_at: row.created_at,
+      posted_at: row.posted_at,
+      pin_url: row.pin_url,
       pin: {
         id: row.pins.id,
         title: row.pins.title,
@@ -126,7 +133,10 @@ export async function GET() {
     items.push({
       source: 'library',
       id: row.id,
+      status: row.status,
       created_at: row.generated_at,
+      posted_at: row.posted_at,
+      pin_url: row.pin_url,
       pin: {
         id: row.id,
         title: row.title,
@@ -144,8 +154,7 @@ export async function GET() {
     });
   }
 
-  // PLAIN: Newest first across both sources.
-  // TECH:  ISO date strings sort lexicographically just fine.
+  // PLAIN: Newest first within the merged list. UI re-groups by status.
   items.sort((a, b) => b.created_at.localeCompare(a.created_at));
 
   return NextResponse.json({ items });

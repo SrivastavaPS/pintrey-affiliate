@@ -12,6 +12,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { generatePinForProductId } from '@/lib/pins';
 
+// PLAIN: Allow up to 30s for AI pin generation. Default Vercel limit is 10s.
+export const maxDuration = 30;
+
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
   const productId: string | undefined = body.productId;

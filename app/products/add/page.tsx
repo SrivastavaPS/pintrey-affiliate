@@ -255,7 +255,17 @@ export default function AddProductPage() {
       if (!res.ok) {
         setError(data.error ?? 'Could not save product.');
       } else {
-        // PLAIN: Saved! Clear the form and refresh the library.
+        // PLAIN: Save succeeded. Surface pin-gen failures (if any) so
+        //        the user knows to retry from /queue or /products/add.
+        // TECH:  pin_gen_error is null on success, string on AI/DB failure.
+        if (data.pin_gen_error) {
+          setError(
+            `Saved, but pin generation failed: ${data.pin_gen_error}. ` +
+              `Open /queue → Failed section → "Try again", or use the ` +
+              `Create pin button on the dashboard.`
+          );
+        }
+        // PLAIN: Reset form fields after save.
         // TECH:  Reset all controlled inputs; refetch list.
         setUrl('');
         setPreview(null);
