@@ -1,26 +1,69 @@
+/* =============================================================================
+   GLOBAL STYLES — design tokens + base resets
+   ============================================================================= */
+
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
+/* PLAIN: Define the brand colour palette + spacing tokens here so every
+   page draws from the same well. Tailwind picks these up automatically.
+   TECH: @theme inline tells Tailwind v4 to use these as utility values. */
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  /* Surfaces */
+  --color-background: #fafafa;
+  --color-surface: #ffffff;
+  --color-foreground: #0f172a; /* slate-900 */
+  --color-muted: #64748b;       /* slate-500 */
+  --color-border: #e2e8f0;      /* slate-200 */
+
+  /* Brand */
+  --color-primary: #4f46e5;     /* indigo-600 */
+  --color-primary-hover: #4338ca; /* indigo-700 */
+  --color-primary-soft: #eef2ff;  /* indigo-50 */
+  --color-accent: #f43f5e;      /* rose-500 */
+  --color-accent-soft: #fff1f2; /* rose-50 */
+
+  /* Semantic */
+  --color-success: #059669;     /* emerald-600 */
+  --color-success-soft: #ecfdf5; /* emerald-50 */
+  --color-warning: #d97706;     /* amber-600 */
+  --color-warning-soft: #fffbeb; /* amber-50 */
+  --color-danger: #dc2626;      /* red-600 */
+  --color-danger-soft: #fef2f2; /* red-50 */
+
+  /* Typography */
+  --font-sans: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
+/* PLAIN: Apply the font + base text colour to the whole app.
+   TECH: body-level reset; pages can override per-section. */
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-family: var(--font-sans);
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  -webkit-font-smoothing: antialiased;
+}
+
+/* PLAIN: Improves focus rings — accessible AND nice-looking.
+   TECH: Replaces browser default with brand-coloured ring. */
+*:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* PLAIN: Smoother default scroll. */
+html {
+  scroll-behavior: smooth;
+}
+
+/* PLAIN: Hide scrollbars in horizontal-scroll containers but keep functionality.
+   TECH: Used by stat-card rows on small screens. */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
 }

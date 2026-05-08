@@ -1,18 +1,36 @@
 // =============================================================================
-// PAGE: /products/add — your product library manager
+// PAGE: /products/add — add a product from any affiliate source
 // =============================================================================
-// PLAIN: This page lets you paste any Amazon India URL → preview the product
-//        → save it to your library. Shows everything saved below.
+// PLAIN: Source selector at top (Amazon active, others "Coming Soon"),
+//        then paste-URL → Extract → Save flow. AI auto-fills title, image,
+//        price, niche tags, and matches/creates the right niche.
 //
-// TECH:  Client component. Uses /api/library endpoints for CRUD operations.
+// TECH:  Client component. /api/library handles extraction + AI niche match.
+//        /api/pins/generate fires synchronously after save.
 // =============================================================================
 
 'use client';
 
 import { useEffect, useState } from 'react';
+import {
+  Search,
+  Save,
+  Sparkles,
+  Lock,
+  CheckCircle2,
+  AlertTriangle,
+  Trash2,
+  PowerOff,
+  Power,
+  ExternalLink,
+} from 'lucide-react';
+import { toast } from 'sonner';
+import { TopBar } from '@/components/layout/TopBar';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/Card';
+import { Button } from '@/components/ui/Button';
+import { Badge } from '@/components/ui/Badge';
+import { EmptyState } from '@/components/ui/EmptyState';
 
-// PLAIN: Shape of one product in the library.
-// TECH:  Mirrors product_library table.
 interface LibraryProduct {
   id: string;
   asin: string;
@@ -29,17 +47,12 @@ interface LibraryProduct {
   created_at: string;
 }
 
-// PLAIN: One niche option in the dropdown.
-// TECH:  Subset of trending_niches needed for selection.
 interface NicheOption {
   id: string;
   name: string;
   score: number | null;
 }
 
-// PLAIN: Shape of the preview returned by POST /api/library (mode=preview).
-// TECH:  Same fields as LibraryProduct minus DB-only ones. Includes AI-
-//        suggested niche_tags and scraped price.
 interface ProductPreview {
   asin: string;
   title: string;
@@ -50,75 +63,45 @@ interface ProductPreview {
   niche_tags: string | null;
   notes: string | null;
   niche_id?: string | null;
-  /** PLAIN: Top 3 niche IDs that AI thinks fit this product (best first). */
   niche_top3?: string[];
 }
 
-export default function AddProductPage() {
-  // PLAIN: The Amazon URL the user typed.
-  // TECH:  Controlled input.
-  const [url, setUrl] = useState('');
+type Source = 'amazon' | 'flipkart' | 'myntra' | 'meesho';
 
-  // PLAIN: Loading state while fetching preview or saving.
-  // TECH:  Disables the form.
+const SOURCES: {
+  id: Source;
+  label: string;
+  active: boolean;
+  color: string;
+  emoji: string;
+}[] = [
+  { id: 'amazon', label: 'Amazon India', active: true, color: 'bg-amber-50 border-amber-200', emoji: '🛍️' },
+  { id: 'flipkart', label: 'Flipkart', active: false, color: 'bg-blue-50 border-blue-200', emoji: '🏪' },
+  { id: 'myntra', label: 'Myntra', active: false, color: 'bg-pink-50 border-pink-200', emoji: '👗' },
+  { id: 'meesho', label: 'Meesho', active: false, color: 'bg-purple-50 border-purple-200', emoji: '🎁' },
+];
+
+export default function AddProductPage() {
+  const [selectedSource, setSelectedSource] = useState<Source>('amazon');
+  const [url, setUrl] = useState('');
   const [busy, setBusy] = useState(false);
 
-  // PLAIN: Error message to show in red.
-  // TECH:  Cleared on each new action.
-  const [error, setError] = useState<string | null>(null);
-
-  // PLAIN: The preview returned from the server (before save).
-  // TECH:  null = no preview yet; populated after Extract click.
   const [preview, setPreview] = useState<ProductPreview | null>(null);
-
-  // PLAIN: User-editable fields on top of the preview (title, price, tags).
-  // TECH:  Bound to preview but split so user edits override scraped values.
   const [editTitle, setEditTitle] = useState('');
   const [editPrice, setEditPrice] = useState('');
   const [editTags, setEditTags] = useState('');
   const [editNotes, setEditNotes] = useState('');
   const [editImageUrl, setEditImageUrl] = useState('');
 
-  // PLAIN: True if Amazon blocked our metadata fetch — UI shows a warning
-  //        and lets user fill in the title and image URL manually.
-  // TECH:  Read from preview.title; "Amazon product <ASIN>" pattern means
-  //        the og:title fetch failed and we're using a fallback string.
-  const [extractionFailed, setExtractionFailed] = useState(false);
-
-  // PLAIN: Re-suggest niche AFTER user manually typed a real title.
-  //        Calls the same preview endpoint with a synthetic URL so AI gets
-  //        a real product name to work with.
-  // TECH:  Loading state for the "✨ Re-suggest" button.
-  const [reSuggesting, setReSuggesting] = useState(false);
-
-  // PLAIN: All products currently in your library.
-  // TECH:  Refreshed after every save/delete.
   const [library, setLibrary] = useState<LibraryProduct[]>([]);
-
-  // PLAIN: Available niches for the dropdown.
-  // TECH:  Fetched from /api/niches on mount.
   const [niches, setNiches] = useState<NicheOption[]>([]);
-
-  // PLAIN: Currently selected niche for this product.
-  // TECH:  Optional — products without niche show as "Uncategorised" on dashboard.
   const [selectedNicheId, setSelectedNicheId] = useState<string>('');
 
-  // PLAIN: AI's top-3 niche suggestions (best first). Shown as quick-select
-  //        buttons above the dropdown so the user can pick from the obvious
-  //        candidates without scrolling.
-  // TECH:  Set from preview.niche_top3; cleared on cancel/save.
   const [topNicheSuggestions, setTopNicheSuggestions] = useState<string[]>([]);
-
-  // PLAIN: True when the AI auto-created a brand-new niche (none of the
-  //        existing ones fit). Drives the "✨ NEW NICHE CREATED" badge.
-  // TECH:  Set in handleExtract by comparing niche IDs before/after the call.
   const [aiCreatedNewNiche, setAiCreatedNewNiche] = useState(false);
+  const [extractionFailed, setExtractionFailed] = useState(false);
+  const [reSuggesting, setReSuggesting] = useState(false);
 
-  // PLAIN: Load the library list + niches list on first render.
-  //        Pre-fill niche from ?niche=<id> URL param if present (deep link
-  //        from dashboard's "+ Add product" button under each niche).
-  // TECH:  Empty deps array → runs once on mount. URLSearchParams reads
-  //        the query string client-side.
   useEffect(() => {
     void refreshLibrary();
     void refreshNiches();
@@ -129,20 +112,16 @@ export default function AddProductPage() {
     }
   }, []);
 
-  // PLAIN: Re-fetches the library list from the server.
-  // TECH:  GET /api/library; updates state.
   async function refreshLibrary() {
     try {
       const res = await fetch('/api/library');
       const data = await res.json();
       setLibrary(data.products ?? []);
     } catch {
-      // PLAIN: Silent fail — list is non-critical.
+      // PLAIN: Silent — list is non-critical.
     }
   }
 
-  // PLAIN: Loads the trending_niches catalog for the dropdown.
-  // TECH:  GET /api/niches; sorted by score server-side.
   async function refreshNiches() {
     try {
       const res = await fetch('/api/niches');
@@ -154,22 +133,22 @@ export default function AddProductPage() {
         score: n.score,
       })));
     } catch {
-      // PLAIN: Silent fail — dropdown just stays empty.
+      // PLAIN: Silent — dropdown stays empty.
     }
   }
 
-  // PLAIN: Click "Extract" → fetch preview from server.
-  // TECH:  POST /api/library with mode=preview; populate preview state.
   async function handleExtract() {
     if (!url.trim()) {
-      setError('Please paste an Amazon URL first.');
+      toast.warning('Please paste an Amazon URL first');
       return;
     }
     setBusy(true);
-    setError(null);
     setPreview(null);
+    setAiCreatedNewNiche(false);
 
     try {
+      const knownIds = new Set(niches.map((n) => n.id));
+
       const res = await fetch('/api/library', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -178,58 +157,87 @@ export default function AddProductPage() {
       const data = await res.json();
 
       if (!res.ok) {
-        setError(data.error ?? 'Could not preview product.');
+        toast.error('Could not extract product', { description: data.error });
+        return;
+      }
+
+      setPreview(data.preview);
+      setEditTitle(data.preview.title ?? '');
+      setEditPrice(data.preview.price ?? '');
+      setEditTags(data.preview.niche_tags ?? '');
+      setEditImageUrl(data.preview.image_url ?? '');
+      setEditNotes('');
+
+      const isFallbackTitle =
+        (data.preview.title ?? '').startsWith('Amazon product ');
+      setExtractionFailed(isFallbackTitle);
+
+      if (data.preview.niche_id) {
+        await refreshNiches();
+        setSelectedNicheId(data.preview.niche_id);
+        setAiCreatedNewNiche(!knownIds.has(data.preview.niche_id));
+      }
+
+      setTopNicheSuggestions(data.preview.niche_top3 ?? []);
+
+      if (isFallbackTitle) {
+        toast.warning('Amazon blocked auto-extraction', {
+          description: 'Please fill in Title and Image URL manually.',
+        });
       } else {
-        // PLAIN: Snapshot existing niche IDs so we can detect if the AI
-        //        just created a brand-new niche (one that wasn't there before).
-        // TECH:  Set of IDs before refresh; compared after to identify new rows.
-        const knownIds = new Set(niches.map((n) => n.id));
-
-        // PLAIN: Pre-fill all the form fields from the AI extraction.
-        setPreview(data.preview);
-        setEditTitle(data.preview.title ?? '');
-        setEditPrice(data.preview.price ?? '');
-        setEditTags(data.preview.niche_tags ?? '');
-        setEditImageUrl(data.preview.image_url ?? '');
-        setEditNotes('');
-
-        // PLAIN: Detect "extraction failed" by inspecting the title fallback.
-        //        When Amazon blocks us, the API returns "Amazon product <ASIN>".
-        // TECH:  Used to show a yellow warning banner.
-        const isFallbackTitle =
-          (data.preview.title ?? '').startsWith('Amazon product ');
-        setExtractionFailed(isFallbackTitle);
-
-        // PLAIN: Pre-fill the niche dropdown with AI's best match. Always
-        //        refresh the niches list first in case AI just created one.
-        // TECH:  Order matters: refresh BEFORE setting selectedNicheId so
-        //        the option exists when the <select> reads its value.
-        if (data.preview.niche_id) {
-          await refreshNiches();
-          setSelectedNicheId(data.preview.niche_id);
-          setAiCreatedNewNiche(!knownIds.has(data.preview.niche_id));
-        } else {
-          setAiCreatedNewNiche(false);
-        }
-
-        // PLAIN: Save the top-3 suggestions so the UI can show quick-pick
-        //        buttons above the dropdown.
-        // TECH:  Default to empty array; UI hides the buttons when empty.
-        setTopNicheSuggestions(data.preview.niche_top3 ?? []);
+        toast.success('Product extracted', {
+          description: data.preview.niche_id
+            ? aiCreatedNewNiche
+              ? 'AI created a new niche for this product.'
+              : 'AI matched it to an existing niche.'
+            : undefined,
+        });
       }
     } catch (err) {
-      setError((err as Error).message);
+      toast.error((err as Error).message);
     } finally {
       setBusy(false);
     }
   }
 
-  // PLAIN: Click "Save" → write to library, clear form, refresh list.
-  // TECH:  POST /api/library mode=save with edited fields.
+  async function handleResuggestNiche() {
+    if (!preview || !editTitle.trim()) return;
+    setReSuggesting(true);
+
+    try {
+      const knownIds = new Set(niches.map((n) => n.id));
+      const res = await fetch('/api/library', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: preview.product_url,
+          mode: 'preview',
+          title: editTitle,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.preview) {
+        setEditTags(data.preview.niche_tags ?? editTags);
+        if (data.preview.niche_id) {
+          await refreshNiches();
+          setSelectedNicheId(data.preview.niche_id);
+          setAiCreatedNewNiche(!knownIds.has(data.preview.niche_id));
+        }
+        setTopNicheSuggestions(data.preview.niche_top3 ?? []);
+        toast.success('AI re-matched the niche');
+      } else {
+        toast.error('Re-suggestion failed', { description: data.error });
+      }
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setReSuggesting(false);
+    }
+  }
+
   async function handleSave() {
     if (!preview) return;
     setBusy(true);
-    setError(null);
 
     try {
       const res = await fetch('/api/library', {
@@ -242,31 +250,32 @@ export default function AddProductPage() {
           price: editPrice || null,
           niche_tags: editTags || null,
           notes: editNotes || null,
-          // PLAIN: Manual image URL override (used when Amazon blocked the
-          //        og:image fetch, so user pastes one themselves).
           image_url: editImageUrl || preview.image_url || null,
-          // PLAIN: Primary niche assignment for dashboard grouping.
-          // TECH:  Empty string → null so DB FK is unset.
           niche_id: selectedNicheId || null,
         }),
       });
       const data = await res.json();
 
       if (!res.ok) {
-        setError(data.error ?? 'Could not save product.');
+        toast.error('Save failed', { description: data.error });
       } else {
-        // PLAIN: Save succeeded. Surface pin-gen failures (if any) so
-        //        the user knows to retry from /queue or /products/add.
-        // TECH:  pin_gen_error is null on success, string on AI/DB failure.
         if (data.pin_gen_error) {
-          setError(
-            `Saved, but pin generation failed: ${data.pin_gen_error}. ` +
-              `Open /queue → Failed section → "Try again", or use the ` +
-              `Create pin button on the dashboard.`
-          );
+          toast.warning('Saved, but pin generation failed', {
+            description: data.pin_gen_error,
+            action: {
+              label: 'Open Pin Manager',
+              onClick: () => (window.location.href = '/pin-manager'),
+            },
+          });
+        } else {
+          toast.success('Product saved · pin generating', {
+            description: 'Pin will appear in Pin Manager in a few seconds.',
+            action: {
+              label: 'View Queue',
+              onClick: () => (window.location.href = '/pin-manager'),
+            },
+          });
         }
-        // PLAIN: Reset form fields after save.
-        // TECH:  Reset all controlled inputs; refetch list.
         setUrl('');
         setPreview(null);
         setEditTitle('');
@@ -281,64 +290,9 @@ export default function AddProductPage() {
         await refreshLibrary();
       }
     } catch (err) {
-      setError((err as Error).message);
+      toast.error((err as Error).message);
     } finally {
       setBusy(false);
-    }
-  }
-
-  // PLAIN: Delete a product from the library.
-  // TECH:  DELETE /api/library/<id>; refresh list.
-  // PLAIN: After user manually fixes the title, re-run AI niche suggestion.
-  //        Useful when Amazon blocked our auto-extract and user typed the
-  //        real title themselves.
-  // TECH:  Calls /api/library again with mode=preview, but now the API
-  //        gets a real title to work with. Updates only the AI-driven
-  //        fields (tags, niche_id, top3) — preserves user's title/price.
-  async function handleResuggestNiche() {
-    if (!preview || !editTitle.trim()) return;
-    setReSuggesting(true);
-    setError(null);
-
-    try {
-      // PLAIN: Send a synthetic URL preview but pass the user-entered title
-      //        as a body field so AI can see it. The API uses meta.title
-      //        currently — easier to send the URL again and have the API
-      //        re-fetch (or use a server hint via title override).
-      // TECH:  We re-POST the same URL; the API will re-fetch metadata.
-      //        If still blocked, AI gets nothing and we leave fields alone.
-      //        Future: API could accept an explicit `force_title` param.
-      const knownIds = new Set(niches.map((n) => n.id));
-
-      const res = await fetch('/api/library', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          url: preview.product_url,
-          mode: 'preview',
-          // Hint: user-entered title. API doesn't read this yet, but
-          // we send it so a future API change can use it.
-          title: editTitle,
-        }),
-      });
-      const data = await res.json();
-
-      if (res.ok && data.preview) {
-        // PLAIN: Only update AI-suggested fields; keep user's edits.
-        setEditTags(data.preview.niche_tags ?? editTags);
-        if (data.preview.niche_id) {
-          await refreshNiches();
-          setSelectedNicheId(data.preview.niche_id);
-          setAiCreatedNewNiche(!knownIds.has(data.preview.niche_id));
-        }
-        setTopNicheSuggestions(data.preview.niche_top3 ?? []);
-      } else {
-        setError(data.error ?? 'Re-suggestion failed');
-      }
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setReSuggesting(false);
     }
   }
 
@@ -346,14 +300,13 @@ export default function AddProductPage() {
     if (!confirm('Remove this product from your library?')) return;
     try {
       await fetch(`/api/library/${id}`, { method: 'DELETE' });
+      toast.success('Product deleted');
       await refreshLibrary();
     } catch {
-      // PLAIN: Silent — user can retry.
+      toast.error('Delete failed');
     }
   }
 
-  // PLAIN: Toggle a product on/off without deleting.
-  // TECH:  PATCH /api/library/<id> with is_active flip.
   async function handleToggleActive(p: LibraryProduct) {
     try {
       await fetch(`/api/library/${p.id}`, {
@@ -361,351 +314,398 @@ export default function AddProductPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ is_active: !p.is_active }),
       });
+      toast.success(p.is_active ? 'Disabled' : 'Enabled');
       await refreshLibrary();
     } catch {
-      // PLAIN: Silent — user can retry.
+      toast.error('Update failed');
     }
   }
 
   return (
-    <main className="min-h-screen bg-gradient-to-br from-rose-50 to-indigo-50 p-8">
-      <div className="mx-auto max-w-5xl">
-        {/* HEADER */}
-        <header className="mb-8">
-          <h1 className="text-4xl font-bold text-gray-900">Product Library</h1>
-          <p className="mt-2 text-gray-600">
-            Paste any Amazon India URL to add a product. Your POC will pick
-            from these instead of mock data.
-          </p>
-        </header>
+    <>
+      <TopBar
+        title="Add Product"
+        subtitle="Paste a product URL and AI does the rest"
+      />
 
-        {/* ADD FORM */}
-        <section className="mb-8 rounded-xl bg-white p-6 shadow">
-          <h2 className="mb-4 text-xl font-semibold text-gray-900">
-            Add a product
-          </h2>
-
-          <div className="flex gap-3">
-            <input
-              type="url"
-              placeholder="https://www.amazon.in/dp/B0BS6XRQDF"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              disabled={busy}
-              className="flex-1 rounded-lg border border-gray-300 px-4 py-3 text-sm focus:border-rose-500 focus:outline-none"
-            />
-            <button
-              onClick={handleExtract}
-              disabled={busy || !url.trim()}
-              className="rounded-lg bg-rose-600 px-6 py-3 font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:bg-gray-400"
-            >
-              {busy ? 'Working…' : 'Extract'}
-            </button>
-          </div>
-
-          {error && (
-            <p className="mt-3 rounded bg-red-50 p-3 text-sm text-red-700">
-              {error}
-            </p>
-          )}
-
-          {/* PREVIEW + EDIT */}
-          {preview && (
-            <div className="mt-6 grid gap-6 rounded-lg border border-gray-200 bg-gray-50 p-4 md:grid-cols-[200px_1fr]">
-              {/* IMAGE PREVIEW */}
-              <div>
-                {preview.image_url ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={preview.image_url}
-                    alt={preview.title}
-                    className="w-full rounded-lg border border-gray-200 bg-white"
-                  />
-                ) : (
-                  <div className="flex h-48 w-full items-center justify-center rounded-lg border border-gray-200 bg-white text-xs text-gray-400">
-                    No image
-                  </div>
-                )}
-                <p className="mt-2 font-mono text-xs text-gray-500">
-                  ASIN: {preview.asin}
-                </p>
-              </div>
-
-              {/* EDITABLE FIELDS */}
-              <div className="space-y-3">
-                {/* WARNING BANNER WHEN AMAZON BLOCKED THE FETCH */}
-                {extractionFailed && (
-                  <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
-                    <p className="font-semibold">
-                      ⚠ Amazon blocked auto-extraction.
-                    </p>
-                    <p className="mt-1">
-                      This happens because Vercel serves from US datacenters.
-                      Please fill in the <b>Title</b> and <b>Image URL</b>{' '}
-                      below manually. Then click{' '}
-                      <b>✨ Re-suggest niche</b> to let AI categorise the
-                      product correctly.
-                    </p>
-                  </div>
-                )}
-
-                <label className="block">
-                  <span className="text-xs font-semibold uppercase text-gray-500">
-                    Title {extractionFailed && (
-                      <span className="ml-2 rounded bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-700">
-                        FILL MANUALLY
-                      </span>
-                    )}
-                  </span>
-                  <input
-                    value={editTitle}
-                    onChange={(e) => setEditTitle(e.target.value)}
-                    className="mt-1 block w-full rounded border border-gray-300 px-3 py-2 text-sm"
-                  />
-                  {extractionFailed && (
-                    <button
-                      type="button"
-                      onClick={handleResuggestNiche}
-                      disabled={reSuggesting || !editTitle.trim()}
-                      className="mt-2 rounded-lg bg-purple-600 px-3 py-1.5 text-xs font-semibold text-white shadow hover:bg-purple-700 disabled:bg-gray-400"
-                    >
-                      {reSuggesting ? 'Thinking…' : '✨ Re-suggest niche from title'}
-                    </button>
-                  )}
-                </label>
-
-                <label className="block">
-                  <span className="text-xs font-semibold uppercase text-gray-500">
-                    Image URL {extractionFailed && (
-                      <span className="ml-2 rounded bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-700">
-                        PASTE MANUALLY
-                      </span>
-                    )}
-                  </span>
-                  <input
-                    value={editImageUrl}
-                    onChange={(e) => setEditImageUrl(e.target.value)}
-                    placeholder="https://m.media-amazon.com/images/I/..."
-                    className="mt-1 block w-full rounded border border-gray-300 px-3 py-2 text-sm"
-                  />
-                  <span className="text-xs text-gray-400">
-                    On Amazon: right-click the product photo → &quot;Copy
-                    image link&quot; → paste here.
-                  </span>
-                </label>
-
-                <label className="block">
-                  <span className="text-xs font-semibold uppercase text-gray-500">
-                    Price {preview.price && (
-                      <span className="ml-2 rounded bg-green-100 px-2 py-0.5 text-[10px] font-bold text-green-700">
-                        AUTO-DETECTED
-                      </span>
-                    )}
-                  </span>
-                  <input
-                    value={editPrice}
-                    onChange={(e) => setEditPrice(e.target.value)}
-                    placeholder="₹1,099"
-                    className="mt-1 block w-full rounded border border-gray-300 px-3 py-2 text-sm"
-                  />
-                </label>
-
-                <label className="block">
-                  <span className="text-xs font-semibold uppercase text-gray-500">
-                    Niche tags (comma-separated) {preview.niche_tags && (
-                      <span className="ml-2 rounded bg-purple-100 px-2 py-0.5 text-[10px] font-bold text-purple-700">
-                        AI-SUGGESTED
-                      </span>
-                    )}
-                  </span>
-                  <input
-                    value={editTags}
-                    onChange={(e) => setEditTags(e.target.value)}
-                    placeholder="skincare, korean, toner, anti-acne"
-                    className="mt-1 block w-full rounded border border-gray-300 px-3 py-2 text-sm"
-                  />
-                  <span className="text-xs text-gray-400">
-                    AI matches niches to these tags. Edit if you want
-                    different keywords. More tags = more chances your
-                    product gets picked.
-                  </span>
-                </label>
-
-                <label className="block">
-                  <span className="text-xs font-semibold uppercase text-gray-500">
-                    Primary niche {preview.niche_id && (
-                      <span
-                        className={`ml-2 rounded px-2 py-0.5 text-[10px] font-bold ${
-                          aiCreatedNewNiche
-                            ? 'bg-amber-100 text-amber-700'
-                            : 'bg-purple-100 text-purple-700'
-                        }`}
-                      >
-                        {aiCreatedNewNiche ? '✨ NEW NICHE CREATED' : 'AI-MATCHED'}
-                      </span>
-                    )}
-                  </span>
-
-                  {/* TOP-3 QUICK-SELECT BUTTONS */}
-                  {topNicheSuggestions.length > 0 && (
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      {topNicheSuggestions
-                        .map((id, idx) => {
-                          const niche = niches.find((n) => n.id === id);
-                          if (!niche) return null;
-                          const isSelected = selectedNicheId === niche.id;
-                          return (
-                            <button
-                              key={niche.id}
-                              type="button"
-                              onClick={() => setSelectedNicheId(niche.id)}
-                              className={`rounded-full px-3 py-1 text-xs font-semibold transition ${
-                                isSelected
-                                  ? 'bg-purple-600 text-white shadow'
-                                  : 'bg-purple-50 text-purple-700 hover:bg-purple-100'
-                              }`}
-                            >
-                              {idx === 0 ? '⭐ ' : ''}{niche.name}
-                            </button>
-                          );
-                        })
-                        .filter(Boolean)}
-                      <span className="self-center text-xs text-gray-400">
-                        ← AI suggests one of these · or pick from list below
-                      </span>
-                    </div>
-                  )}
-
-                  <select
-                    value={selectedNicheId}
-                    onChange={(e) => setSelectedNicheId(e.target.value)}
-                    className="mt-2 block w-full rounded border border-gray-300 px-3 py-2 text-sm"
-                  >
-                    <option value="">— No niche assigned (Uncategorised) —</option>
-                    {niches.map((n) => (
-                      <option key={n.id} value={n.id}>
-                        {n.name}
-                        {n.score !== null ? ` (score ${n.score})` : ''}
-                      </option>
-                    ))}
-                  </select>
-                  <span className="text-xs text-gray-400">
-                    {aiCreatedNewNiche
-                      ? "AI didn't find a good match, so it created a new niche. "
-                      : 'Click a chip above for the AI\'s pick, or change to any niche from the list. '}
-                    No niches yet? Click <b>✨ Discover top 10 niches</b> on
-                    the home page first.
-                  </span>
-                </label>
-
-                <label className="block">
-                  <span className="text-xs font-semibold uppercase text-gray-500">
-                    Notes (optional)
-                  </span>
-                  <textarea
-                    value={editNotes}
-                    onChange={(e) => setEditNotes(e.target.value)}
-                    rows={2}
-                    className="mt-1 block w-full rounded border border-gray-300 px-3 py-2 text-sm"
-                  />
-                </label>
-
-                <div className="flex gap-3 pt-2">
+      <div className="flex-1 space-y-6 p-4 md:p-8">
+        {/* SOURCE SELECTOR */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Choose source</CardTitle>
+            <CardDescription>
+              Currently only Amazon India is supported. Other networks coming soon.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+              {SOURCES.map((s) => {
+                const isSelected = selectedSource === s.id && s.active;
+                return (
                   <button
-                    onClick={handleSave}
-                    disabled={busy}
-                    className="rounded-lg bg-green-600 px-5 py-2 font-semibold text-white transition hover:bg-green-700 disabled:bg-gray-400"
+                    key={s.id}
+                    onClick={() => s.active && setSelectedSource(s.id)}
+                    disabled={!s.active}
+                    className={[
+                      'relative flex flex-col items-center gap-2 rounded-xl border-2 p-5 transition-all',
+                      s.active
+                        ? isSelected
+                          ? 'border-indigo-600 bg-indigo-50 shadow-md'
+                          : 'border-slate-200 bg-white hover:border-slate-300'
+                        : 'cursor-not-allowed border-slate-200 bg-slate-50 opacity-60',
+                    ].join(' ')}
                   >
-                    {busy ? 'Saving…' : 'Save to library'}
+                    <span className="text-3xl">{s.emoji}</span>
+                    <span className={`text-sm font-medium ${s.active ? 'text-slate-900' : 'text-slate-500'}`}>
+                      {s.label}
+                    </span>
+                    {!s.active && (
+                      <Badge variant="neutral">
+                        <Lock className="mr-1 h-3 w-3" />
+                        Coming soon
+                      </Badge>
+                    )}
+                    {isSelected && s.active && (
+                      <span className="absolute right-2 top-2 flex h-5 w-5 items-center justify-center rounded-full bg-indigo-600 text-white">
+                        <CheckCircle2 className="h-3 w-3" />
+                      </span>
+                    )}
                   </button>
-                  <button
-                    onClick={() => setPreview(null)}
-                    disabled={busy}
-                    className="rounded-lg bg-gray-200 px-5 py-2 font-semibold text-gray-700 hover:bg-gray-300"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
+                );
+              })}
             </div>
-          )}
-        </section>
+          </CardContent>
+        </Card>
 
-        {/* LIBRARY LIST */}
-        <section className="rounded-xl bg-white p-6 shadow">
-          <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-xl font-semibold text-gray-900">
-              Your products ({library.length})
-            </h2>
-            {library.length === 0 && (
-              <span className="text-sm text-gray-400">
-                Add your first product above ↑
-              </span>
-            )}
-          </div>
+        {/* URL INPUT */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Paste {SOURCES.find((s) => s.id === selectedSource)?.label} URL</CardTitle>
+            <CardDescription>
+              Right-click the product on Amazon → Copy link → paste below.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="flex gap-3">
+              <input
+                type="url"
+                placeholder="https://www.amazon.in/dp/B0BS6XRQDF"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                disabled={busy}
+                className="flex-1 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none disabled:bg-slate-50"
+              />
+              <Button
+                onClick={handleExtract}
+                loading={busy && !preview}
+                disabled={!url.trim()}
+                icon={<Search className="h-4 w-4" />}
+              >
+                Extract
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
 
-          {library.length > 0 && (
-            <ul className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-              {library.map((p) => (
-                <li
-                  key={p.id}
-                  className={`rounded-lg border p-4 transition ${
-                    p.is_active
-                      ? 'border-gray-200 bg-white'
-                      : 'border-gray-200 bg-gray-100 opacity-60'
-                  }`}
-                >
-                  {p.image_url ? (
+        {/* EXTRACTION PREVIEW */}
+        {preview && (
+          <Card>
+            <CardHeader>
+              <CardTitle>Review &amp; save</CardTitle>
+              <CardDescription>
+                Edit anything below, then save. Pin auto-generates after save.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {extractionFailed && (
+                <div className="mb-4 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <div>
+                    <p className="font-medium">Amazon blocked auto-extraction</p>
+                    <p className="mt-1 text-xs">
+                      Vercel servers from US datacenters sometimes get blocked.
+                      Fill in the Title and Image URL manually below, then click{' '}
+                      <strong>Re-suggest niche</strong>.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              <div className="grid gap-6 md:grid-cols-[180px_1fr]">
+                <div>
+                  {(editImageUrl || preview.image_url) ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img
-                      src={p.image_url}
-                      alt={p.title}
-                      className="mb-3 h-40 w-full rounded object-contain"
+                      src={editImageUrl || preview.image_url || ''}
+                      alt={preview.title}
+                      className="w-full rounded-lg border border-slate-200 bg-white"
                     />
                   ) : (
-                    <div className="mb-3 flex h-40 w-full items-center justify-center rounded bg-gray-100 text-xs text-gray-400">
+                    <div className="flex aspect-square w-full items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-xs text-slate-400">
                       No image
                     </div>
                   )}
-                  <p className="font-semibold text-sm">{p.title}</p>
-                  <p className="text-xs text-gray-500">
-                    {p.price ?? '—'} · ASIN {p.asin}
+                  <p className="mt-2 font-mono text-xs text-slate-500">
+                    ASIN: {preview.asin}
                   </p>
-                  {p.niche_tags && (
-                    <p className="mt-1 text-xs text-rose-600">
-                      {p.niche_tags}
-                    </p>
-                  )}
-                  <div className="mt-3 flex gap-2 text-xs">
-                    <a
-                      href={p.affiliate_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-blue-600 hover:underline"
+                </div>
+
+                <div className="space-y-3">
+                  <FieldLabel
+                    label="Title"
+                    badge={extractionFailed ? { text: 'FILL MANUALLY', variant: 'warning' } : undefined}
+                  >
+                    <input
+                      value={editTitle}
+                      onChange={(e) => setEditTitle(e.target.value)}
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+                    />
+                    {extractionFailed && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={handleResuggestNiche}
+                        loading={reSuggesting}
+                        disabled={!editTitle.trim()}
+                        icon={<Sparkles className="h-3.5 w-3.5" />}
+                        className="mt-2"
+                      >
+                        Re-suggest niche from title
+                      </Button>
+                    )}
+                  </FieldLabel>
+
+                  <FieldLabel
+                    label="Image URL"
+                    badge={extractionFailed ? { text: 'PASTE MANUALLY', variant: 'warning' } : undefined}
+                  >
+                    <input
+                      value={editImageUrl}
+                      onChange={(e) => setEditImageUrl(e.target.value)}
+                      placeholder="https://m.media-amazon.com/images/I/..."
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+                    />
+                  </FieldLabel>
+
+                  <FieldLabel
+                    label="Price"
+                    badge={preview.price ? { text: 'AUTO-DETECTED', variant: 'success' } : undefined}
+                  >
+                    <input
+                      value={editPrice}
+                      onChange={(e) => setEditPrice(e.target.value)}
+                      placeholder="₹1,099"
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+                    />
+                  </FieldLabel>
+
+                  <FieldLabel
+                    label="Niche tags"
+                    badge={preview.niche_tags ? { text: 'AI-SUGGESTED', variant: 'primary' } : undefined}
+                    hint="AI matches niches to these tags. Edit to fine-tune matching."
+                  >
+                    <input
+                      value={editTags}
+                      onChange={(e) => setEditTags(e.target.value)}
+                      placeholder="skincare, korean, toner, anti-acne"
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+                    />
+                  </FieldLabel>
+
+                  <FieldLabel
+                    label="Primary niche"
+                    badge={
+                      preview.niche_id
+                        ? aiCreatedNewNiche
+                          ? { text: 'NEW NICHE CREATED', variant: 'warning' }
+                          : { text: 'AI-MATCHED', variant: 'primary' }
+                        : undefined
+                    }
+                    hint={aiCreatedNewNiche ? "AI didn't find a good match, so it created a new niche." : undefined}
+                  >
+                    {topNicheSuggestions.length > 0 && (
+                      <div className="mb-2 flex flex-wrap gap-2">
+                        {topNicheSuggestions.map((id, idx) => {
+                          const n = niches.find((nx) => nx.id === id);
+                          if (!n) return null;
+                          const isSelected = selectedNicheId === n.id;
+                          return (
+                            <button
+                              key={n.id}
+                              type="button"
+                              onClick={() => setSelectedNicheId(n.id)}
+                              className={[
+                                'rounded-full px-3 py-1 text-xs font-medium transition',
+                                isSelected
+                                  ? 'bg-indigo-600 text-white'
+                                  : 'bg-indigo-50 text-indigo-700 hover:bg-indigo-100',
+                              ].join(' ')}
+                            >
+                              {idx === 0 ? '⭐ ' : ''}{n.name}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                    <select
+                      value={selectedNicheId}
+                      onChange={(e) => setSelectedNicheId(e.target.value)}
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
                     >
-                      View on Amazon
-                    </a>
-                    <span className="text-gray-300">·</span>
-                    <button
-                      onClick={() => handleToggleActive(p)}
-                      className="text-gray-600 hover:underline"
+                      <option value="">— Uncategorised —</option>
+                      {niches.map((n) => (
+                        <option key={n.id} value={n.id}>
+                          {n.name}
+                          {n.score !== null ? ` · score ${n.score}` : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </FieldLabel>
+
+                  <FieldLabel label="Notes (optional)">
+                    <textarea
+                      value={editNotes}
+                      onChange={(e) => setEditNotes(e.target.value)}
+                      rows={2}
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+                    />
+                  </FieldLabel>
+
+                  <div className="flex gap-2 pt-2">
+                    <Button
+                      onClick={handleSave}
+                      loading={busy}
+                      icon={<Save className="h-4 w-4" />}
                     >
-                      {p.is_active ? 'Disable' : 'Enable'}
-                    </button>
-                    <span className="text-gray-300">·</span>
-                    <button
-                      onClick={() => handleDelete(p.id)}
-                      className="text-red-600 hover:underline"
+                      Save to library
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      onClick={() => setPreview(null)}
+                      disabled={busy}
                     >
-                      Delete
-                    </button>
+                      Cancel
+                    </Button>
                   </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* LIBRARY LIST */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Your products ({library.length})</CardTitle>
+            <CardDescription>
+              All saved products. Toggle off to skip from automation.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {library.length === 0 ? (
+              <EmptyState
+                title="No products yet"
+                description="Add your first product above by pasting an Amazon URL."
+              />
+            ) : (
+              <ul className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
+                {library.map((p) => (
+                  <li
+                    key={p.id}
+                    className={`flex flex-col rounded-lg border border-slate-200 bg-white p-3 transition-colors ${
+                      p.is_active ? '' : 'opacity-60'
+                    }`}
+                  >
+                    {p.image_url ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={p.image_url}
+                        alt={p.title}
+                        className="h-32 w-full rounded object-contain"
+                      />
+                    ) : (
+                      <div className="flex h-32 w-full items-center justify-center rounded bg-slate-100 text-xs text-slate-400">
+                        No image
+                      </div>
+                    )}
+                    <p className="mt-2 line-clamp-2 text-sm font-medium text-slate-900">
+                      {p.title}
+                    </p>
+                    <p className="text-xs text-slate-500">
+                      {p.price ?? '—'} · ASIN {p.asin}
+                    </p>
+                    {p.niche_tags && (
+                      <p className="mt-1 line-clamp-1 text-xs text-rose-600">
+                        {p.niche_tags}
+                      </p>
+                    )}
+                    <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-2 text-xs">
+                      <a
+                        href={p.affiliate_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center gap-1 text-indigo-600 hover:underline"
+                      >
+                        <ExternalLink className="h-3 w-3" />
+                        Amazon
+                      </a>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => handleToggleActive(p)}
+                          className="text-slate-500 hover:text-slate-900"
+                          title={p.is_active ? 'Disable' : 'Enable'}
+                        >
+                          {p.is_active ? <Power className="h-3.5 w-3.5" /> : <PowerOff className="h-3.5 w-3.5" />}
+                        </button>
+                        <button
+                          onClick={() => handleDelete(p.id)}
+                          className="text-red-600 hover:text-red-700"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CardContent>
+        </Card>
       </div>
-    </main>
+    </>
+  );
+}
+
+// =============================================================================
+// CHILD: FieldLabel
+// =============================================================================
+// PLAIN: Wraps form fields with a consistent label + optional badge + hint.
+// =============================================================================
+function FieldLabel({
+  label,
+  badge,
+  hint,
+  children,
+}: {
+  label: string;
+  badge?: { text: string; variant: 'success' | 'warning' | 'primary' };
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <label className="block">
+      <div className="mb-1 flex items-center gap-2">
+        <span className="text-xs font-semibold uppercase tracking-wide text-slate-600">
+          {label}
+        </span>
+        {badge && (
+          <Badge variant={badge.variant} className="text-[9px]">
+            {badge.text}
+          </Badge>
+        )}
+      </div>
+      {children}
+      {hint && <p className="mt-1 text-xs text-slate-500">{hint}</p>}
+    </label>
   );
 }
