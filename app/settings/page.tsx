@@ -13,11 +13,20 @@ import {
   FileText,
   ShieldCheck,
   ChevronRight,
+  KeyRound,
 } from 'lucide-react';
 import { TopBar } from '@/components/layout/TopBar';
 import { Card, CardContent } from '@/components/ui/Card';
 
 const SECTIONS = [
+  {
+    href: '/admin',
+    icon: <KeyRound className="h-5 w-5" />,
+    title: 'Admin · API keys & secrets',
+    description:
+      'View status of every API key, token, and integration. Edit instructions for Vercel & local.',
+    accent: true,
+  },
   {
     href: '/niches/cleanup',
     icon: <Wrench className="h-5 w-5" />,
@@ -63,9 +72,19 @@ export default function SettingsPage() {
             {SECTIONS.map((s) => (
               <li key={s.href}>
                 <Link href={s.href}>
-                  <Card className="cursor-pointer transition-all hover:border-slate-300 hover:shadow-md">
+                  <Card
+                    className={`cursor-pointer transition-all hover:border-slate-300 hover:shadow-md ${
+                      s.accent ? 'border-indigo-200 bg-indigo-50/30' : ''
+                    }`}
+                  >
                     <CardContent className="flex items-center gap-4 p-5">
-                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-indigo-50 text-indigo-600">
+                      <div
+                        className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${
+                          s.accent
+                            ? 'bg-indigo-600 text-white'
+                            : 'bg-indigo-50 text-indigo-600'
+                        }`}
+                      >
                         {s.icon}
                       </div>
                       <div className="min-w-0 flex-1">
