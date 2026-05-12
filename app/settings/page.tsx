@@ -9,7 +9,6 @@ import Link from 'next/link';
 import {
   Wrench,
   PinIcon,
-  Sparkles,
   FileText,
   ShieldCheck,
   ChevronRight,
@@ -39,13 +38,6 @@ const SECTIONS = [
     title: 'Pinterest connection',
     description:
       'Verify your Pinterest API token, pick a default board, and check connection status.',
-  },
-  {
-    href: '/poc',
-    icon: <Sparkles className="h-5 w-5" />,
-    title: 'Run POC pipeline',
-    description:
-      'Legacy one-click pipeline: AI niche → product → pin → post. Useful for end-to-end demos.',
   },
   {
     href: '/privacy',

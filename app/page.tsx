@@ -19,7 +19,6 @@ import {
   CheckCircle2,
   PlusCircle,
   ArrowRight,
-  Sparkles,
   ListChecks,
   AlertCircle,
 } from 'lucide-react';
@@ -116,11 +115,6 @@ export default function DashboardPage() {
         subtitle="Overview of your Pinterest affiliate pipeline"
         actions={
           <>
-            <Link href="/poc">
-              <Button variant="ghost" size="md" icon={<Sparkles className="h-4 w-4" />}>
-                Run POC
-              </Button>
-            </Link>
             <Link href="/products/add">
               <Button variant="primary" size="md" icon={<PlusCircle className="h-4 w-4" />}>
                 Add Product

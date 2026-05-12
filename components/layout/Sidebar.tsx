@@ -19,6 +19,7 @@ import {
   BarChart3,
   Settings,
   Sparkles,
+  LogOut,
 } from 'lucide-react';
 import type { ReactNode } from 'react';
 
@@ -67,7 +68,7 @@ const NAV: NavItem[] = [
     href: '/settings',
     label: 'Settings',
     icon: <Settings className="h-5 w-5" />,
-    matchPrefixes: ['/settings', '/niches/cleanup', '/pinterest/setup', '/poc'],
+    matchPrefixes: ['/settings', '/admin', '/niches/cleanup', '/pinterest/setup'],
   },
 ];
 
@@ -128,9 +129,20 @@ export function Sidebar({ pendingPinCount = 0 }: SidebarProps) {
       </nav>
 
       {/* FOOTER */}
-      <div className="border-t border-slate-200 p-3 text-xs text-slate-400">
-        <p>Pintrey Affiliate</p>
-        <p>v0.5 · Phase 2.5</p>
+      <div className="border-t border-slate-200 p-3">
+        <button
+          onClick={async () => {
+            // PLAIN: Clear cookie + reload to /login.
+            // TECH:  POST /api/auth/logout then window.location.
+            await fetch('/api/auth/logout', { method: 'POST' });
+            window.location.href = '/login';
+          }}
+          className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-50 hover:text-slate-900"
+        >
+          <LogOut className="h-5 w-5" />
+          Sign out
+        </button>
+        <p className="mt-3 px-3 text-[10px] text-slate-400">Pintrey · v0.6</p>
       </div>
     </aside>
   );
